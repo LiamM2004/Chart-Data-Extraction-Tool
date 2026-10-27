@@ -25,3 +25,4 @@ python -m chartx.preprocessing.deskew tests/data/photo.jpg -o out/photo.png --de
 ```
 
 Put sample chart photos (varied angles and lighting) in `tests/data/`.
+
