@@ -4,7 +4,7 @@ Extract data from photos of real-world charts.
 
 ## Pipeline
 
-1. **Preprocessing** - fix perspective and level the axes (`chartx/preprocessing/deskew.py`) *(done)*
+1. **Preprocessing** - fix perspective and level the axes (`chartx/preprocessing/deskew.py`) *(WIP)*
 2. **Axis detection** - find the axes and plot area *(todo)*
 3. **Tick reading** - locate ticks and OCR their labels *(todo)*
 4. **Calibration** - fit pixel -> value mapping per axis *(todo)*
