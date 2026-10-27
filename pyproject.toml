@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "chartx"
+version = "0.1.0"
+description = "Extract data from photos of charts"
+requires-python = ">=3.10"
+dependencies = [
+    "opencv-python",
+    "numpy",
+]
+
+[project.optional-dependencies]
+# OCR for tick labels (not used yet); pick one when the axis stage is built
+ocr = ["easyocr"]
+dev = ["pytest"]
+
+[tool.setuptools.packages.find]
+include = ["chartx*"]
