@@ -126,21 +126,29 @@ def find_pie_ellipse(img: np.ndarray,
     return ((cx / scale, cy / scale), (d0 / scale, d1 / scale), ang)
 
 
-def circularise(img: np.ndarray, ellipse) -> tuple[np.ndarray, float]:
+def circularise_transform(ellipse, shape: tuple) -> tuple[np.ndarray, tuple[int, int], float]:
     """
-    Stretch `img` along the ellipse's short axis so the ellipse becomes a
-    circle (the long axis is kept, so nothing is downsampled).
-    Returns (image, stretch factor = long axis / short axis).
+    3x3 matrix that stretches an image of `shape` along the ellipse's short axis
+    so the ellipse becomes a circle (the long axis is kept, so nothing is
+    downsampled). Returns (matrix, output size (w, h), stretch factor = long
+    axis / short axis). The matrix shifts the result so nothing is cut off.
     """
     (cx, cy), (d0, d1), ang = ellipse
     target = max(d0, d1)
     t = np.radians(ang)
     R = np.array([[np.cos(t), -np.sin(t)], [np.sin(t), np.cos(t)]])
-    L = R @ np.diag([target / d0, target / d1]) @ R.T    # linear part, about the centre
-    h, w = img.shape[:2]
+    L = R @ np.diag([target / d0, target / d1]) @ R.T    # linear part
+    h, w = shape[:2]
     corners = np.array([[0, 0], [w, 0], [w, h], [0, h]], float) @ L.T
     lo = corners.min(axis=0)
-    M = np.hstack([L, (-lo)[:, None]])                   # shift so nothing is cut off
+    M = np.eye(3)
+    M[:2, :2], M[:2, 2] = L, -lo
     size = tuple(int(np.ceil(v)) for v in (corners.max(axis=0) - lo))
-    out = cv2.warpAffine(img, M, size, flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
-    return out, float(target / min(d0, d1))
+    return M, size, float(target / min(d0, d1))
+
+
+def circularise(img: np.ndarray, ellipse) -> tuple[np.ndarray, float]:
+    """Apply circularise_transform to `img`. Returns (image, stretch factor)."""
+    M, size, stretch = circularise_transform(ellipse, img.shape)
+    out = cv2.warpAffine(img, M[:2], size, flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
+    return out, stretch
