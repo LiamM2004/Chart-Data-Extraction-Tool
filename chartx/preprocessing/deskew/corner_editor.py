@@ -13,7 +13,7 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
-from chartx.preprocessing.geometry import order_corners
+from chartx.preprocessing.deskew.geometry import order_corners
 
 
 class CornerEditor:
@@ -50,6 +50,8 @@ class CornerEditor:
         self.handles = [list(order_corners(initial)[i] * self.scale + self.offset) for i in range(4)]
         self.active = 0
         self.dragging = False
+        for i, (x, y) in enumerate(self.handles):      # a suggested corner far off the canvas would be unreachable
+            self._move_handle(i, x, y)
 
     @staticmethod
     def _default_corners(w: int, h: int, margin: float = 0.1) -> np.ndarray:

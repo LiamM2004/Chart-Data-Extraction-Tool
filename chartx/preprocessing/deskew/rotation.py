@@ -46,9 +46,15 @@ def _without_ink_touching_the_border(mask: np.ndarray) -> np.ndarray:
     return mask
 
 
-def find_long_straight_lines(img: np.ndarray, min_len_frac: float = 0.25) -> np.ndarray:
-    """Long straight segments of ink, as an Nx4 array of (x1, y1, x2, y2)."""
+def find_long_straight_lines(img: np.ndarray, min_len_frac: float = 0.25, ignoring_pie=None) -> np.ndarray:
+    """
+    Long straight segments of ink, as an Nx4 array of (x1, y1, x2, y2).
+    Pass a pie (from find_pie_ellipse) as `ignoring_pie` to leave its hatching and
+    outline out: strokes inside a pie can line up into a convincing but false "L".
+    """
     mask = find_ink(img)
+    if ignoring_pie is not None:
+        _erase_the_pie(mask, ignoring_pie)
     h, w = mask.shape
     min_len = int(min_len_frac * min(h, w))
     lines = cv2.HoughLinesP(mask, rho=1, theta=np.pi / 720, threshold=80,
@@ -204,11 +210,16 @@ def _ink_without_the_pie(img: np.ndarray, pie) -> np.ndarray | None:
     scale = 1000 / max(img.shape[:2])
     small = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
     mask = find_ink(small)
-    (cx, cy), (d0, d1), angle = pie
-    cv2.ellipse(mask, ((cx * scale, cy * scale), (d0 * scale * 1.15, d1 * scale * 1.15), angle), 0, -1)
+    _erase_the_pie(mask, pie, scale)
     if cv2.countNonZero(mask) < 0.001 * mask.size:
         return None
     return mask.astype(np.float32) / 255
+
+
+def _erase_the_pie(mask: np.ndarray, pie, scale: float = 1.0):
+    """Blank out the pie (a little wider than its outline) from an ink mask that is `scale` times the photo's size."""
+    (cx, cy), (d0, d1), angle = pie
+    cv2.ellipse(mask, ((cx * scale, cy * scale), (d0 * scale * 1.15, d1 * scale * 1.15), angle), 0, -1)
 
 
 def _how_row_like_the_ink_is(ink: np.ndarray, rotate_by_deg: float) -> float:

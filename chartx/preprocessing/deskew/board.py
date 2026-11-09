@@ -4,7 +4,7 @@ board.py - find the whiteboard in a photo and work out how to straighten it.
     corners, confidence = find_board_corners(photo)           # all four sides in shot
     matrix, size = board_to_rectangle_transform(corners, photo.shape)
 
-(When a side of the board is out of shot, see partial_board.py.)
+(When a side of the board is out of shot, see three_edge_board.py.)
 
 Requires: opencv-python, numpy
 """
@@ -16,7 +16,7 @@ import itertools
 import cv2
 import numpy as np
 
-from chartx.preprocessing.geometry import (ASSUMED_FOCAL_FRAC, best_candidate, camera_matrix, edge_support_score,
+from chartx.preprocessing.deskew.geometry import (ASSUMED_FOCAL_FRAC, best_candidate, camera_matrix, edge_support_score,
                                            find_edge_lines, find_edge_maps, order_corners, shrink_to_width,
                                            share_of_segment_on_edges, where_lines_cross)
 

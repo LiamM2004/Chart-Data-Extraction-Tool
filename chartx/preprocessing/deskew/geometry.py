@@ -23,16 +23,28 @@ def camera_matrix(width: int, height: int, focal_frac: float = ASSUMED_FOCAL_FRA
 
 
 def order_corners(pts: np.ndarray) -> np.ndarray:
-    """Order 4 points as top-left, top-right, bottom-right, bottom-left."""
+    """
+    Order 4 points as top-left, top-right, bottom-right, bottom-left.
+
+    The points are sorted clockwise by their angle around the centre, which gives four
+    different corners however the shape is rotated, and the list starts at the point
+    nearest the photo's top-left (smallest x+y).
+    """
     pts = np.asarray(pts, dtype=np.float32).reshape(4, 2)
-    s = pts.sum(axis=1)
-    d = np.diff(pts, axis=1).ravel()          # y - x
-    return np.array([
-        pts[np.argmin(s)],                    # TL: smallest x+y
-        pts[np.argmin(d)],                    # TR: smallest y-x
-        pts[np.argmax(s)],                    # BR: largest x+y
-        pts[np.argmax(d)],                    # BL: largest y-x
-    ], dtype=np.float32)
+    centre = pts.mean(axis=0)
+    angle = np.arctan2(pts[:, 1] - centre[1], pts[:, 0] - centre[0])    # y points down, so this runs clockwise
+    clockwise = pts[np.argsort(angle)]
+    return np.roll(clockwise, -int(np.argmin(clockwise.sum(axis=1))), axis=0)
+
+
+def is_a_usable_quad(corners: np.ndarray, image_shape: tuple, min_area_frac: float = 0.005) -> bool:
+    """True if `corners` are four finite points forming a convex four-sided shape that covers a real part of the photo."""
+    pts = np.asarray(corners, dtype=np.float32).reshape(4, 2)
+    if not np.all(np.isfinite(pts)):
+        return False
+    ordered = order_corners(pts)
+    return (bool(cv2.isContourConvex(ordered.reshape(-1, 1, 2)))
+            and cv2.contourArea(ordered) >= min_area_frac * image_shape[0] * image_shape[1])
 
 
 def shrink_to_width(img: np.ndarray, width: int) -> tuple[np.ndarray, float]:
@@ -60,12 +72,23 @@ def find_edge_lines(edges: np.ndarray, vertical: bool, k: int = 8,
         dev = np.degrees(min(theta, np.pi - theta) if vertical else abs(theta - np.pi / 2))
         if dev > max_dev:
             continue
-        if any(abs(rho - r) < 12 and abs(theta - t) < np.radians(3) for r, t in out):
+        if any(_is_near_duplicate(rho, theta, r, t) for r, t in out):
             continue                              # near-duplicate of a stronger line
         out.append((float(rho), float(theta)))
         if len(out) >= k:
             break
     return out
+
+
+def _is_near_duplicate(rho: float, theta: float, other_rho: float, other_theta: float) -> bool:
+    """
+    True if two (rho, theta) lines are almost the same line. A line is also written as
+    (-rho, theta - pi), so a near-vertical edge can show up at theta ~0 and again at theta ~pi.
+    """
+    for r, t in ((other_rho, other_theta), (-other_rho, other_theta - np.pi), (-other_rho, other_theta + np.pi)):
+        if abs(rho - r) < 12 and abs(theta - t) < np.radians(3):
+            return True
+    return False
 
 
 def where_lines_cross(line_a, line_b) -> np.ndarray | None:
