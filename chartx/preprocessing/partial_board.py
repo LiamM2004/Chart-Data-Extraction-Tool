@@ -25,15 +25,9 @@ import itertools
 import cv2
 import numpy as np
 
-from chartx.preprocessing.geometry import edge_coverage, hough_lines, intersect, order_corners
-
-
-def _exit_point(start: np.ndarray, direction: np.ndarray, w: int, h: int) -> np.ndarray | None:
-    """Where the ray from `start` along `direction` leaves the w x h photo."""
-    far = start + direction * 10 * max(w, h)
-    ok, _, end = cv2.clipLine((0, 0, w - 1, h - 1), tuple(int(v) for v in start),
-                              tuple(int(v) for v in far))
-    return np.array(end, float) if ok else None
+from chartx.preprocessing.geometry import (as_homogeneous_line, best_candidate, edge_support_score, find_edge_lines,
+                                           find_edge_maps, line_direction, order_corners, shrink_to_width,
+                                           share_of_segment_on_edges, where_lines_cross, where_ray_leaves_photo)
 
 
 def find_partial_board_corners(img: np.ndarray,
@@ -43,69 +37,108 @@ def find_partial_board_corners(img: np.ndarray,
     """
     Look for a board seen with one vertical side out of shot.
 
-    Tries every (top, bottom, vertical) triple of strong Hough lines, on either
+    Tries every (top, bottom, vertical) triple of strong lines, on either
     side of the vertical one, and scores it by edge support along the three
     visible edges. Returns (corners, confidence), with corners ordered TL, TR,
     BR, BL in image coordinates and confidence the weakest visible edge's
     support (0-1), or (None, 0.0). The quad only covers the visible part of the
     board; its out-of-shot side lies along the photo's border.
     """
-    h, w = img.shape[:2]
-    scale = work_width / w if w > work_width else 1.0
-    small = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA) if scale != 1.0 else img
-    gray = cv2.GaussianBlur(cv2.cvtColor(small, cv2.COLOR_BGR2GRAY), (5, 5), 0)
-    edges = cv2.Canny(gray, 30, 100)
-    thick = cv2.dilate(edges, np.ones((5, 5), np.uint8))
-    H, W = edges.shape
+    small, scale = shrink_to_width(img, work_width)
+    edges, thick_edges = find_edge_maps(small)
+    horizontal = find_edge_lines(edges, vertical=False, k=12)
+    vertical = find_edge_lines(edges, vertical=True, k=12)
+    height, width = edges.shape
 
-    def in_photo(p, margin: float = 0.03) -> bool:
-        return -margin * W <= p[0] <= (1 + margin) * W and -margin * H <= p[1] <= (1 + margin) * H
-
-    best, best_score, best_conf = None, 0.0, 0.0
-    horiz = hough_lines(edges, vertical=False, k=12)
-    vert = hough_lines(edges, vertical=True, k=12)
-    for top, bottom in itertools.combinations(horiz, 2):
-        for side_line in vert:
-            a, b = intersect(top, side_line), intersect(bottom, side_line)
-            if a is None or b is None or not (in_photo(a) and in_photo(b)):
-                continue
-            if np.linalg.norm(a - b) < 0.2 * H:
-                continue
-            up = (b - a) / np.linalg.norm(b - a)              # direction of the visible vertical edge
-            for side in (1, -1):                              # is the board to the right or the left?
-                exits = []
-                for line, start in ((top, a), (bottom, b)):
-                    d = np.array([-np.sin(line[1]), np.cos(line[1])])
-                    exits.append(_exit_point(start, d if d[0] * side > 0 else -d, W, H))
-                if any(e is None for e in exits):
-                    continue
-                if min(np.linalg.norm(exits[0] - a), np.linalg.norm(exits[1] - b)) < min_visible_frac * W:
-                    continue
-                cov = [edge_coverage(thick, a, exits[0]), edge_coverage(thick, b, exits[1]),
-                       edge_coverage(thick, a, b)]
-                score = min(cov) * np.mean(cov)
-                if score <= best_score:
-                    continue
-                # The missing side: parallel to the visible one, through whichever
-                # exit point keeps all four corners in the photo (larger quad wins).
-                quads = []
-                for e in exits:
-                    far = e + up
-                    ends = []
-                    for line in (top, bottom):
-                        p = np.cross([e[0], e[1], 1.0], [far[0], far[1], 1.0])
-                        q = np.cross(np.array([np.cos(line[1]), np.sin(line[1]), -line[0]]), p)
-                        ends.append(q[:2] / q[2] if abs(q[2]) > 1e-9 else None)
-                    if any(p is None for p in ends):
-                        continue
-                    quad = np.array([a, ends[0], ends[1], b], np.float32)
-                    quads.append((all(in_photo(p) for p in quad), cv2.contourArea(quad), quad))
-                if not quads:
-                    continue
-                inside = [q for q in quads if q[0]] or quads
-                best = max(inside, key=lambda q: q[1])[2]
-                best_score, best_conf = score, min(cov)
-
+    best = best_candidate(_scored_boards(horizontal, vertical, thick_edges, width, height, min_visible_frac))
     if best is None:
         return None, 0.0
-    return order_corners(best / scale), best_conf
+    _, confidence, quad = best
+    return order_corners(quad / scale), confidence
+
+
+def _scored_boards(horizontal, vertical, thick_edges, width: int, height: int, min_visible_frac: float):
+    """Every (top, bottom, side) triple, with the board on either side of the side edge, as (score, confidence, quad)."""
+    for top, bottom in itertools.combinations(horizontal, 2):
+        for side_line in vertical:
+            top_corner, bottom_corner = where_lines_cross(top, side_line), where_lines_cross(bottom, side_line)
+            if not _is_a_usable_visible_edge(top_corner, bottom_corner, width, height):
+                continue
+            for board_is_to_the_right in (True, False):
+                found = _board_on_one_side(top, bottom, top_corner, bottom_corner, board_is_to_the_right,
+                                           thick_edges, width, height, min_visible_frac)
+                if found is not None:
+                    yield found
+
+
+def _is_a_usable_visible_edge(top_corner, bottom_corner, width: int, height: int) -> bool:
+    """The visible vertical edge must meet both horizontals inside the photo and be reasonably tall."""
+    if top_corner is None or bottom_corner is None:
+        return False
+    if not (_is_in_photo(top_corner, width, height) and _is_in_photo(bottom_corner, width, height)):
+        return False
+    return np.linalg.norm(top_corner - bottom_corner) >= 0.2 * height
+
+
+def _board_on_one_side(top, bottom, top_corner, bottom_corner, board_is_to_the_right: bool,
+                       thick_edges, width: int, height: int, min_visible_frac: float):
+    """
+    Try the board lying to one side of the visible vertical edge.
+    Returns (score, confidence, quad), or None if that side doesn't work out.
+    """
+    side = 1 if board_is_to_the_right else -1
+    exits = [where_ray_leaves_photo(corner, _direction_towards(line, side), width, height)
+             for line, corner in ((top, top_corner), (bottom, bottom_corner))]
+    if any(e is None for e in exits):
+        return None
+    top_exit, bottom_exit = exits
+    visible = min(np.linalg.norm(top_exit - top_corner), np.linalg.norm(bottom_exit - bottom_corner))
+    if visible < min_visible_frac * width:
+        return None
+
+    support = [share_of_segment_on_edges(thick_edges, top_corner, top_exit),
+               share_of_segment_on_edges(thick_edges, bottom_corner, bottom_exit),
+               share_of_segment_on_edges(thick_edges, top_corner, bottom_corner)]
+    up = (bottom_corner - top_corner) / np.linalg.norm(bottom_corner - top_corner)
+    quad = _close_the_missing_side(top, bottom, top_corner, bottom_corner, exits, up, width, height)
+    if quad is None:
+        return None
+    confidence, score = edge_support_score(support)
+    return score, confidence, quad
+
+
+def _close_the_missing_side(top, bottom, top_corner, bottom_corner, exits, up, width: int, height: int):
+    """
+    Build the missing side: parallel to the visible vertical edge, through
+    whichever exit point keeps all four corners in the photo (larger quad wins).
+    """
+    options = []
+    for exit_point in exits:
+        parallel_point = exit_point + up
+        ends = [_where_line_meets_line_through(line, exit_point, parallel_point) for line in (top, bottom)]
+        if any(end is None for end in ends):
+            continue
+        quad = np.array([top_corner, ends[0], ends[1], bottom_corner], np.float32)
+        all_in_photo = all(_is_in_photo(corner, width, height) for corner in quad)
+        options.append((all_in_photo, cv2.contourArea(quad), quad))
+    if not options:
+        return None
+    preferred = [option for option in options if option[0]] or options
+    return max(preferred, key=lambda option: option[1])[2]
+
+
+def _is_in_photo(point, width: int, height: int, margin: float = 0.03) -> bool:
+    return -margin * width <= point[0] <= (1 + margin) * width and -margin * height <= point[1] <= (1 + margin) * height
+
+
+def _direction_towards(line, side: int) -> np.ndarray:
+    """Unit vector along a (rho, theta) line, pointing right (side=1) or left (side=-1)."""
+    d = line_direction(line)
+    return d if d[0] * side > 0 else -d
+
+
+def _where_line_meets_line_through(line, p: np.ndarray, q: np.ndarray) -> np.ndarray | None:
+    """Where a (rho, theta) line meets the line through points p and q, or None if they are parallel."""
+    through_pq = np.cross([p[0], p[1], 1.0], [q[0], q[1], 1.0])
+    meeting = np.cross(as_homogeneous_line(line), through_pq)
+    return meeting[:2] / meeting[2] if abs(meeting[2]) > 1e-9 else None
