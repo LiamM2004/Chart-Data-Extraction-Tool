@@ -66,7 +66,8 @@ def _ask_for_corners_unless_confident(always: bool):
     """A hook for the pipeline: open the drag window when asked to, or when the board wasn't found with confidence."""
     def ask(photo: np.ndarray, straightened: DeskewResult):
         if always or straightened.needs_review:
-            return select_corners_manually(photo, initial=straightened.corners)   # the window starts from our best guess
+            # the window starts from our best guess, if there is one
+            return select_corners_manually(photo, initial=straightened.corners)
         return None
     return ask
 

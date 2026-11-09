@@ -38,7 +38,7 @@ def order_corners(pts: np.ndarray) -> np.ndarray:
 
 
 def is_a_usable_quad(corners: np.ndarray, image_shape: tuple, min_area_frac: float = 0.005) -> bool:
-    """True if `corners` are four finite points forming a convex four-sided shape that covers a real part of the photo."""
+    """True if `corners` are four finite points forming a convex shape that covers a real part of the photo."""
     pts = np.asarray(corners, dtype=np.float32).reshape(4, 2)
     if not np.all(np.isfinite(pts)):
         return False
@@ -56,7 +56,7 @@ def shrink_to_width(img: np.ndarray, width: int) -> tuple[np.ndarray, float]:
 
 
 def find_edge_maps(img: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Where the brightness changes sharply: the thin edge map, and a thickened copy that forgives slightly-off lines."""
+    """Where the brightness changes sharply: the thin edge map, and a thickened copy that forgives near misses."""
     gray = cv2.GaussianBlur(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), (5, 5), 0)
     edges = cv2.Canny(gray, 30, 100)
     return edges, cv2.dilate(edges, np.ones((5, 5), np.uint8))

@@ -110,7 +110,8 @@ def _as_bgr_photo(img) -> np.ndarray:
     """
     if not isinstance(img, np.ndarray) or img.dtype != np.uint8 or img.ndim not in (2, 3) or img.size == 0:
         found = f"{img.dtype} array of shape {img.shape}" if isinstance(img, np.ndarray) else type(img).__name__
-        raise ValueError(f"deskew() needs a photo as a non-empty 8-bit numpy array (as cv2.imread returns), got {found}")
+        raise ValueError("deskew() needs a photo as a non-empty 8-bit numpy array (as cv2.imread returns), "
+                         f"got {found}")
     if img.ndim == 2:
         return cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
     if img.shape[2] == 4:

@@ -95,7 +95,7 @@ def find_three_edge_board(img: np.ndarray,
 
 
 def _trusted_candidates(horizontals, verticals, scene: _Scene):
-    """Every (pair of horizontals, side) triple, with the board on either side, as (score, confidence, corners, source)."""
+    """Every (pair of horizontals, side) triple, with the board on either side: (score, confidence, corners, source)."""
     for line_a, line_b in itertools.combinations(horizontals, 2):
         source = "steep" if _angle_between(line_a, line_b) >= MIN_CONVERGENCE_DEG else "partial"
         try_board = _steep_candidate if source == "steep" else _partial_candidate
@@ -225,12 +225,13 @@ def _face_on_homography(camera: np.ndarray, line_a, line_b, side_line) -> np.nda
     converging edges and its side edge. None if the three don't make sense.
     """
     to_directions = np.linalg.inv(camera)
-    along = to_directions @ np.cross(as_homogeneous_line(line_a), as_homogeneous_line(line_b))   # where the edges converge
+    converge_at = np.cross(as_homogeneous_line(line_a), as_homogeneous_line(line_b))      # where the edges meet
+    along = to_directions @ converge_at
     if np.linalg.norm(along) < 1e-9:
         return None
     along = _pointing(along / np.linalg.norm(along), axis=0)                  # towards the right
 
-    side_plane_normal = camera.T @ as_homogeneous_line(side_line)             # the plane through the camera and the side edge
+    side_plane_normal = camera.T @ as_homogeneous_line(side_line)             # the plane through camera and side edge
     up_down = np.cross(side_plane_normal, along)                              # in that plane, and square to "along"
     if np.linalg.norm(up_down) < 1e-9:
         return None

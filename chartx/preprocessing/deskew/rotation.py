@@ -36,7 +36,10 @@ def find_ink(img: np.ndarray) -> np.ndarray:
 
 
 def _without_ink_touching_the_border(mask: np.ndarray) -> np.ndarray:
-    """Drop anything touching the image border (board frame, leftover wall, rotation seams). Real chart ink sits inside the board."""
+    """
+    Drop anything touching the image border (board frame, leftover wall, rotation seams).
+    Real chart ink sits inside the board.
+    """
     count, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
     h, w = mask.shape
     x, y, bw, bh = (stats[:, i] for i in range(4))
@@ -179,7 +182,7 @@ def _distance_from_point_to_segment(point: np.ndarray, segment: np.ndarray) -> f
 # Tilt from the writing (pie charts)
 # --------------------------------------------------------------------------- #
 def tilt_from_writing(img: np.ndarray, pie, max_tilt: float = 10.0, step: float = 0.25,
-                      min_peak: float = 1.05) -> float | None:
+                      min_peak: float = 1.4) -> float | None:
     """
     Estimate the image tilt (degrees) from the writing, for a pie chart, which
     has no axes to level on.
@@ -192,7 +195,9 @@ def tilt_from_writing(img: np.ndarray, pie, max_tilt: float = 10.0, step: float 
 
     Handwriting is noisy and bar or line charts can carry sideways text, so
     this is only meant for a pie with no axes. Returns None unless the peak is
-    well inside the search range and clearly above a typical angle's score.
+    well inside the search range and clearly above a typical angle's score
+    (`min_peak` times the median): real writing scored 1.7-2.6 on our photos, a
+    scatter of specks only 1.05-1.14.
     """
     ink = _ink_without_the_pie(img, pie)
     if ink is None:

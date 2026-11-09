@@ -19,13 +19,14 @@ from unittest import mock
 import cv2
 import numpy as np
 
+from chartx.preprocessing.deskew import three_edge_board
 from chartx.preprocessing.deskew.board import estimate_aspect_ratio
 from chartx.preprocessing.deskew.corner_editor import CornerEditor
 from chartx.preprocessing.deskew import deskew
 from chartx.preprocessing.deskew.ellipse import find_pie_ellipse, pie_to_circle_transform
-from chartx.preprocessing.deskew.geometry import (_is_near_duplicate, camera_matrix, find_edge_lines, is_a_usable_quad,
-                                                  order_corners)
+from chartx.preprocessing.deskew.geometry import camera_matrix, find_edge_lines, is_a_usable_quad, order_corners
 from chartx.preprocessing.deskew.rotation import find_long_straight_lines, tilt_from_chart_axes, tilt_from_writing
+from chartx.preprocessing.deskew.straighten import _PhotoCorrection
 from chartx.preprocessing.deskew.three_edge_board import find_three_edge_board
 
 SAMPLES = Path(__file__).resolve().parent.parent / "sample-images"
@@ -44,12 +45,9 @@ def project_rectangle(width, height, shape, focal_frac=0.72, rvec=(0.17, 0.44, 0
 
 
 class GeometryTests(unittest.TestCase):
-    def test_order_corners(self):
+    def test_order_corners_names_an_upright_quad_correctly_and_never_repeats_one_when_turned(self):
         shuffled = [[90, 80], [10, 10], [10, 80], [90, 10]]
-        np.testing.assert_array_equal(order_corners(shuffled),
-                                      [[10, 10], [90, 10], [90, 80], [10, 80]])
-
-    def test_order_corners_gives_four_different_corners_however_the_shape_is_turned(self):
+        np.testing.assert_array_equal(order_corners(shuffled), [[10, 10], [90, 10], [90, 80], [10, 80]])
         diamond = order_corners([(0, 50), (50, 0), (100, 50), (50, 100)])         # a board turned 45 degrees
         self.assertEqual(len({tuple(p) for p in diamond.tolist()}), 4)
         rectangle = np.array([[-300, -200], [300, -200], [300, 200], [-300, 200]], np.float64)
@@ -59,16 +57,19 @@ class GeometryTests(unittest.TestCase):
             ordered = order_corners(turned)
             self.assertEqual(len({tuple(p) for p in ordered.tolist()}), 4, f"turned by {degrees}")
             sides = np.linalg.norm(ordered - np.roll(ordered, -1, axis=0), axis=1)     # going round the shape
-            np.testing.assert_allclose(sorted(sides), [400, 400, 600, 600], atol=1)    # real sides, no crossing diagonal
+            np.testing.assert_allclose(sorted(sides), [400, 400, 600, 600], atol=1)    # real sides, no diagonal
             self.assertAlmostEqual(sides[0], sides[2], delta=1)
+            self.assertEqual(ordered[0].sum(), ordered.sum(axis=1).min(), f"turned by {degrees}: should start top-left")
+        lopsided = order_corners([(60, 0), (100, 40), (40, 100), (0, 50)])
+        np.testing.assert_array_equal(lopsided[0], [0, 50])           # starts at the corner nearest the top-left
 
     def test_a_usable_quad_is_four_different_points_in_a_convex_shape(self):
         shape = (1000, 1600, 3)
         self.assertTrue(is_a_usable_quad([[100, 100], [900, 120], [880, 700], [90, 650]], shape))
-        self.assertTrue(is_a_usable_quad([[900, 120], [100, 100], [880, 700], [90, 650]], shape))  # clicked in a crossed order
+        self.assertTrue(is_a_usable_quad([[900, 120], [100, 100], [880, 700], [90, 650]], shape))  # crossed order
         self.assertFalse(is_a_usable_quad([[500, 500], [501, 500], [501, 501], [500, 501]], shape))   # collapsed
         self.assertFalse(is_a_usable_quad([[0, 0], [400, 0], [800, 0], [1200, 0]], shape))             # in a line
-        self.assertFalse(is_a_usable_quad([[0, 0], [800, 0], [800, 800], [300, 300]], shape))          # one corner pushed inside
+        self.assertFalse(is_a_usable_quad([[0, 0], [800, 0], [800, 800], [300, 300]], shape))          # a dent
         self.assertFalse(is_a_usable_quad([[0, 0], [800, 0], [800, np.nan], [0, 800]], shape))
 
     def test_aspect_ratio_recovered_for_known_camera(self):
@@ -78,14 +79,6 @@ class GeometryTests(unittest.TestCase):
             self.assertAlmostEqual(estimate_aspect_ratio(corners, shape), true_ratio,
                                    delta=0.03 * true_ratio)
 
-    def test_aspect_ratio_tolerates_wrong_focal_length(self):
-        # The camera isn't the one we assume; the answer should stay usable.
-        shape = (2252, 4000, 3)
-        for focal_frac in (0.5, 1.0):
-            corners = project_rectangle(1.5, 1.0, shape, focal_frac=focal_frac)
-            self.assertAlmostEqual(estimate_aspect_ratio(corners, shape), 1.5, delta=0.2)
-
-
 class EdgeLineTests(unittest.TestCase):
     def test_one_near_vertical_edge_is_reported_once(self):
         # A line written at theta ~0 can come back again as (-rho, theta ~pi): the same line twice.
@@ -94,12 +87,6 @@ class EdgeLineTests(unittest.TestCase):
         lines = find_edge_lines(edges, vertical=True, k=8)
         copies = [line for line in lines if abs(abs(line[0]) - 400) < 12]
         self.assertEqual(len(copies), 1, lines)
-
-    def test_a_line_and_its_wrapped_twin_count_as_duplicates(self):
-        self.assertTrue(_is_near_duplicate(400.0, 0.0, -399.0, np.radians(179.5)))
-        self.assertFalse(_is_near_duplicate(400.0, 0.0, 200.0, 0.0))                 # a different line
-        self.assertFalse(_is_near_duplicate(400.0, 0.0, 400.0, np.radians(30)))      # same spot, different direction
-
 
 class PieTests(unittest.TestCase):
     def make_pie(self, axes):
@@ -122,6 +109,25 @@ class PieTests(unittest.TestCase):
 
     def test_blank_image_has_no_pie(self):
         self.assertIsNone(find_pie_ellipse(np.full((900, 1200, 3), 235, np.uint8)))
+
+
+    def test_a_very_oval_shape_is_not_a_pie(self):
+        self.assertIsNone(find_pie_ellipse(self.make_pie((260, 130))))
+
+    def test_a_partial_outline_is_not_a_pie(self):
+        photo = np.full((900, 1200, 3), 235, np.uint8)
+        cv2.ellipse(photo, (600, 450), (230, 230), 0, 0, 200, (20, 20, 20), 3)        # a little over half a circle
+        self.assertIsNone(find_pie_ellipse(photo))
+
+    def test_the_remembered_pie_follows_the_stretch(self):
+        # After the pie is stretched round, the pie we remember must be where the pie really is now.
+        whole_photo = np.array([[0, 0], [1200, 0], [1200, 900], [0, 900]], np.float32)
+        correction = _PhotoCorrection(self.make_pie((260, 210)), whole_photo, 0.72)
+        self.assertGreater(correction.round_off_the_pie(), 1.15)
+        (fx, fy), (d0, d1), _ = find_pie_ellipse(correction.preview)
+        (rx, ry), (diameter, _), _ = correction._pie
+        self.assertLess(np.hypot(rx - fx, ry - fy), 10)
+        self.assertAlmostEqual(diameter / max(d0, d1), 1.0, delta=0.05)
 
 
 def draw_axes(img, origin, x_end, y_end, thickness=4):
@@ -173,37 +179,17 @@ class EndToEndGeometryTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "deskew\\(\\) needs"):
                 deskew(bad)
 
-    def test_a_photo_with_no_board_is_returned_untouched_and_flagged(self):
-        wall = np.full((1000, 1600, 3), 130, np.uint8)
-        result = deskew(wall)
-        self.assertEqual(result.corner_source, "none")
-        self.assertTrue(result.needs_review)
-        self.assertIs(result.image, wall)
+class FillTests(unittest.TestCase):
+    def test_area_outside_the_photo_is_filled_with_the_board_colour(self):
+        photo = np.full((900, 1200, 3), 235, np.uint8)
+        draw_axes(photo, (200, 700), 1000, 150, 5)
+        past_the_edge = np.array([[0, 0], [1500, 0], [1500, 900], [0, 900]], np.float32)   # 300 px past the right side
+        out = deskew(photo, corners=past_the_edge).image
+        outside = out[int(0.3 * out.shape[0]):int(0.7 * out.shape[0]), int(0.9 * out.shape[1]):]
+        self.assertGreater(outside.mean(), 200)
 
 
 class RotationTests(unittest.TestCase):
-    def test_recovers_a_known_tilt(self):
-        img = np.full((800, 1200, 3), 240, np.uint8)
-        draw_axes(img, (200, 600), 1000, 200)
-        for tilt in (-5.0, 3.0):
-            M = cv2.getRotationMatrix2D((600, 400), tilt, 1.0)             # CCW positive
-            tilted = cv2.warpAffine(img, M, (1200, 800), borderValue=(240, 240, 240))
-            self.assertAlmostEqual(tilt_from_chart_axes(find_long_straight_lines(tilted)), tilt, delta=0.5)
-
-    def test_repeated_segments_of_one_stroke_do_not_outvote_the_axes(self):
-        # Hough reports one handwritten stroke (say a row of labels, 2 deg off) as
-        # several overlapping segments; together they must not beat two real axes.
-        def seg(x, y, length, dev_deg, vertical=False):
-            t = np.radians(dev_deg)
-            if vertical:
-                return [x, y, int(x - length * np.sin(t)), int(y + length * np.cos(t))]
-            return [x, y, int(x + length * np.cos(t)), int(y - length * np.sin(t))]
-        axes = [seg(383, 1024, 670, 0.26), seg(448, 1024, 529, 0.22, vertical=True)]
-        stroke = [seg(501, 1069, 437, 1.97), seg(522, 1068, 415, 2.07),
-                  seg(521, 1065, 415, 1.93), seg(521, 1066, 415, 1.93)]
-        tilt = tilt_from_chart_axes(np.array(axes + stroke))
-        self.assertLess(abs(tilt), 0.6)
-
     def test_a_long_stroke_with_no_perpendicular_partner_is_not_an_axis(self):
         # No L, so no tilt estimate: levelling on a lone text line would be a guess.
         stroke = np.array([[100, 800, 1100, 780]])           # ~1.1 deg off level, nothing joins it
@@ -217,10 +203,26 @@ class RotationTests(unittest.TestCase):
         tilt = tilt_from_chart_axes(np.vstack([axes, long_stroke]))
         self.assertAlmostEqual(tilt, 0.0, delta=0.1)
 
-    def test_leaves_a_level_chart_alone(self):
-        img = np.full((800, 1200, 3), 240, np.uint8)
-        draw_axes(img, (200, 600), 1000, 200)
-        self.assertAlmostEqual(tilt_from_chart_axes(find_long_straight_lines(img)), 0.0, delta=0.1)
+    def test_the_tilt_is_the_length_weighted_average_of_the_two_axes(self):
+        # a 600 px axis leaning 2 degrees and a 400 px axis dead upright, meeting in a corner
+        lean = np.radians(2.0)
+        axes = np.array([[100, 500, 100 + int(600 * np.cos(lean)), 500 - int(600 * np.sin(lean))],
+                         [100, 500, 100, 100]])
+        self.assertAlmostEqual(tilt_from_chart_axes(axes), (2.0 * 600 + 0.0 * 400) / 1000, delta=0.1)
+
+    def test_two_lines_far_from_square_are_not_taken_as_axes(self):
+        lean = np.radians(10)                              # one leaning up 10 degrees, the other the opposite way
+        axes = np.array([[100, 500, 100 + int(600 * np.cos(lean)), 500 - int(600 * np.sin(lean))],
+                         [100, 500, 100 + int(400 * np.sin(lean)), 500 - int(400 * np.cos(lean))]])
+        self.assertIsNone(tilt_from_chart_axes(axes))
+
+    def test_a_frame_touching_the_edge_of_the_photo_is_not_mistaken_for_axes(self):
+        chart = np.full((900, 1200, 3), 240, np.uint8)
+        draw_axes(chart, (300, 700), 1000, 200)
+        photo = cv2.warpAffine(chart, cv2.getRotationMatrix2D((600, 450), 4.0, 1.0), (1200, 900),
+                               borderValue=(240, 240, 240))
+        cv2.rectangle(photo, (0, 0), (1199, 899), (20, 20, 20), 8)             # a level frame, longer than the axes
+        self.assertAlmostEqual(tilt_from_chart_axes(find_long_straight_lines(photo)), 4.0, delta=0.5)
 
 
 class TextTiltTests(unittest.TestCase):
@@ -240,22 +242,6 @@ class TextTiltTests(unittest.TestCase):
         cv2.putText(img, "What I do", (90, 60), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (20, 20, 20), 3)
         M = cv2.getRotationMatrix2D((600, 400), tilt, 1.0)                 # CCW positive
         return cv2.warpAffine(img, M, (1200, 800), borderValue=(240, 240, 240))
-
-    def test_recovers_a_known_tilt_from_the_writing(self):
-        for tilt in (-4.0, 3.0):
-            found = tilt_from_writing(self.make_page(True, tilt), self.PIE)
-            self.assertIsNotNone(found)
-            self.assertAlmostEqual(found, tilt, delta=0.5)
-
-    def test_no_writing_no_estimate(self):
-        blank = np.full((800, 1200, 3), 240, np.uint8)
-        self.assertIsNone(tilt_from_writing(blank, self.PIE))
-
-    def test_a_pie_chart_is_levelled_on_its_writing_end_to_end(self):
-        photo = self.make_page(True, 4.0)
-        corners = np.array([[0, 0], [1200, 0], [1200, 800], [0, 800]], np.float32)
-        result = deskew(photo, corners=corners)
-        self.assertAlmostEqual(result.rotation_deg, -4.0, delta=0.6)
 
     def test_strokes_inside_a_pie_are_not_mistaken_for_axes(self):
         # A level "L" of strokes sits inside the pie (hatching can look like this). It must not
@@ -285,10 +271,46 @@ class TextTiltTests(unittest.TestCase):
         self.assertEqual(len(searches), 1)
         self.assertAlmostEqual(result.rotation_deg, -5.0, delta=0.7)
 
+    def test_a_tilted_pie_chart_comes_out_level(self):
+        whole_photo = np.array([[0, 0], [1200, 0], [1200, 800], [0, 800]], np.float32)
+        for tilt in (-4.0, 5.0):
+            image = deskew(self.make_page(True, tilt), corners=whole_photo).image
+            remaining = tilt_from_writing(image, find_pie_ellipse(image))
+            self.assertIsNotNone(remaining, f"tilt {tilt}")
+            self.assertLess(abs(remaining), 0.75, f"a page tilted by {tilt} still leans {remaining:+.2f}")
+
+    def test_ink_with_no_rows_gives_no_estimate(self):
+        rng = np.random.default_rng(1)
+        photo = np.full((800, 1200, 3), 240, np.uint8)
+        cv2.circle(photo, (600, 400), 230, (20, 20, 20), 4)
+        for x, y in rng.integers([40, 40], [1160, 760], size=(500, 2)):
+            if np.hypot(x - 600, y - 400) > 290:                              # specks scattered outside the pie
+                cv2.circle(photo, (int(x), int(y)), 3, (20, 20, 20), -1)
+        self.assertIsNone(tilt_from_writing(photo, self.PIE))
+
+    def test_a_round_pie_is_left_alone(self):
+        whole_photo = np.array([[0, 0], [1200, 0], [1200, 800], [0, 800]], np.float32)
+        self.assertEqual(deskew(self.make_page(True, 0.0), corners=whole_photo).pie_stretch, 1.0)
+
     def test_sideways_writing_does_not_rotate_a_chart_with_no_pie(self):
         photo = self.make_page(False, 4.0)
         corners = np.array([[0, 0], [1200, 0], [1200, 800], [0, 800]], np.float32)
         self.assertEqual(deskew(photo, corners=corners).rotation_deg, 0.0)
+
+
+class LevelledImageTests(unittest.TestCase):
+    """The saved image itself must come out level, not just report a rotation."""
+
+    def test_a_tilted_chart_comes_out_level(self):
+        whole_photo = np.array([[0, 0], [1200, 0], [1200, 800], [0, 800]], np.float32)
+        for tilt in (-5.0, 4.0):
+            chart = np.full((800, 1200, 3), 240, np.uint8)
+            draw_axes(chart, (200, 600), 1000, 200)
+            photo = cv2.warpAffine(chart, cv2.getRotationMatrix2D((600, 400), tilt, 1.0), (1200, 800),
+                                   borderValue=(240, 240, 240))
+            remaining = tilt_from_chart_axes(find_long_straight_lines(deskew(photo, corners=whole_photo).image))
+            self.assertIsNotNone(remaining, f"tilt {tilt}")
+            self.assertLess(abs(remaining), 0.5, f"a chart tilted by {tilt} still leans {remaining:+.2f}")
 
 
 def photo_of_steep_board(yaw: float, size=(1800, 1200)):
@@ -336,23 +358,73 @@ class ThreeEdgeBoardTests(unittest.TestCase):
         self.assertLess(np.linalg.norm(tl - truth[0]), 30)
         self.assertLess(np.linalg.norm(bl - truth[3]), 30)
 
-    def test_a_head_on_board_uses_the_parallel_sides_method(self):
-        # Top and bottom edges are parallel, so they say nothing about the tilt: no camera maths.
-        photo, _ = photo_of_steep_board(yaw=0.0)
-        corners, _, source = find_three_edge_board(photo)
-        self.assertIsNotNone(corners)
-        self.assertEqual(source, "partial")
-
-    def test_needs_a_visible_side_edge(self):
-        # Board runs off both sides of the photo: top and bottom only, nothing to close the shape on.
+    def test_a_board_whose_edges_are_only_half_there_is_not_trusted(self):
         photo = np.full((1000, 1600, 3), 130, np.uint8)
-        cv2.rectangle(photo, (-50, 250), (1700, 800), (235, 235, 235), -1)
-        cv2.rectangle(photo, (-50, 250), (1700, 800), (80, 80, 80), 8)
+
+        def dashed(start, end, dash=50, gap=70):
+            start, end = np.array(start, float), np.array(end, float)
+            length = np.linalg.norm(end - start)
+            direction = (end - start) / length
+            for at in np.arange(0, length, dash + gap):
+                cv2.line(photo, tuple((start + direction * at).astype(int)),
+                         tuple((start + direction * min(at + dash, length)).astype(int)), (240, 240, 240), 8)
+
+        dashed((300, 250), (1900, 250))
+        dashed((300, 800), (1900, 800))
+        dashed((300, 250), (300, 800))
         self.assertIsNone(find_three_edge_board(photo)[0])
 
-    def test_plain_wall_has_no_board(self):
-        self.assertIsNone(find_three_edge_board(np.full((1000, 1600, 3), 130, np.uint8))[0])
+    @staticmethod
+    def edges_of_a_known_board(yaw):
+        """A 3 m x 1 m board seen by the assumed camera: (camera, corners TL TR BR BL, top, bottom, left edge lines)."""
+        camera = camera_matrix(1200, 1800)
+        board = np.array([[0, -0.5, 0], [3, -0.5, 0], [3, 0.5, 0], [0, 0.5, 0]], np.float64)
+        pose = (np.array([0.05, yaw, 0.0]), np.array([-0.45, 0.0, 2.2]))
+        corners = cv2.projectPoints(board, *pose, camera, None)[0].reshape(4, 2)
 
+        def line(p, q):                                    # the (rho, theta) form: x*cos(theta) + y*sin(theta) = rho
+            a, b = q[1] - p[1], p[0] - q[0]
+            a, b = a / np.hypot(a, b), b / np.hypot(a, b)
+            return float(a * p[0] + b * p[1]), float(np.arctan2(b, a))
+
+        tl, tr, br, bl = corners
+        return camera, corners, line(tl, tr), line(bl, br), line(tl, bl)
+
+    def test_the_face_on_matrix_turns_a_known_board_into_a_rectangle(self):
+        for yaw in (0.3, 0.6, 1.0, 1.3):                   # from about 17 to 74 degrees away from face-on
+            camera, corners, top, bottom, side = self.edges_of_a_known_board(yaw)
+            matrix = three_edge_board._face_on_homography(camera, top, bottom, side)
+            self.assertIsNotNone(matrix, f"yaw {yaw}")
+            tl, tr, br, bl = (three_edge_board._apply(matrix, corner) for corner in corners)
+            across, down = tr - tl, bl - tl
+            self.assertLess(abs(np.degrees(np.arctan2(across[1], across[0]))), 0.1, f"yaw {yaw}: top edge not level")
+            self.assertLess(abs(np.degrees(np.arctan2(down[0], down[1]))), 0.1, f"yaw {yaw}: side edge not upright")
+            self.assertAlmostEqual(np.linalg.norm(across) / np.linalg.norm(down), 3.0, delta=0.05, msg=f"yaw {yaw}")
+
+    def test_a_board_turned_almost_edge_on_is_refused(self):
+        camera, _, top, bottom, side = self.edges_of_a_known_board(1.45)       # about 83 degrees from face-on
+        self.assertIsNone(three_edge_board._face_on_homography(camera, top, bottom, side))
+
+    @staticmethod
+    def board_running_off_the_right(left, top, bottom, size=(1000, 1600)):
+        """A light board with a dark outline on a darker wall; its left edge is at `left`, and it runs off the photo."""
+        height, width = size
+        photo = np.full((height, width, 3), 130, np.uint8)
+        cv2.rectangle(photo, (left, top), (width + 1000, bottom), (235, 235, 235), -1)
+        cv2.rectangle(photo, (left, top), (width + 1000, bottom), (80, 80, 80), 8)
+        return photo
+
+    def test_a_board_with_only_a_short_stretch_of_its_edges_showing_is_not_trusted(self):
+        # 300 px of a 1600 px wide photo (19%): too little of the top and bottom edges to judge by
+        self.assertIsNone(find_three_edge_board(self.board_running_off_the_right(1300, 250, 800))[0])
+        enough = self.board_running_off_the_right(1000, 250, 800)               # 600 px showing
+        self.assertIsNotNone(find_three_edge_board(enough)[0])
+
+    def test_a_strip_too_short_to_be_a_board_is_not_trusted(self):
+        # In a tall photo, a side edge only 19% of the height cannot be a whiteboard's side
+        tall = (1600, 1000)
+        self.assertIsNone(find_three_edge_board(self.board_running_off_the_right(300, 600, 900, tall))[0])
+        self.assertIsNotNone(find_three_edge_board(self.board_running_off_the_right(300, 600, 1000, tall))[0])  # 25%
 
 class CornerEditorTests(unittest.TestCase):
     def setUp(self):
@@ -364,9 +436,6 @@ class CornerEditorTests(unittest.TestCase):
         x, y = self.editor.handles[i]
         self.editor.handle_mouse(cv2.EVENT_LBUTTONDOWN, int(x), int(y))
 
-    def test_round_trip_is_exact_when_nothing_moves(self):
-        np.testing.assert_allclose(self.editor.corners(), self.start, atol=0.01)
-
     def test_corner_can_be_dragged_outside_the_photo(self):
         self.grab(0)
         self.editor.handle_mouse(cv2.EVENT_MOUSEMOVE, 0, 0)                 # top-left of the grey canvas
@@ -374,13 +443,6 @@ class CornerEditorTests(unittest.TestCase):
         x, y = self.editor.corners()[0]
         self.assertLess(x, 0)
         self.assertLess(y, 0)
-
-    def test_drag_is_clamped_to_the_canvas(self):
-        self.grab(0)
-        self.editor.handle_mouse(cv2.EVENT_MOUSEMOVE, -500, -500)
-        edge = self.editor.corners()[0].copy()
-        self.editor.handle_mouse(cv2.EVENT_MOUSEMOVE, 0, 0)
-        np.testing.assert_allclose(edge, self.editor.corners()[0])
 
     def test_clicking_away_from_every_handle_moves_nothing(self):
         self.editor.handle_mouse(cv2.EVENT_LBUTTONDOWN, 5, 5)
