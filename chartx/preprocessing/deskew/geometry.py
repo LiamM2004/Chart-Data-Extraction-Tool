@@ -1,8 +1,4 @@
-"""
-geometry.py - small shared helpers for working with corners, edges and lines.
-
-Requires: opencv-python, numpy
-"""
+"""Small shared helpers for corners, edges and lines."""
 
 from __future__ import annotations
 
@@ -23,12 +19,10 @@ def camera_matrix(width: int, height: int, focal_frac: float = ASSUMED_FOCAL_FRA
 
 
 def order_corners(pts: np.ndarray) -> np.ndarray:
-    """
-    Order 4 points as top-left, top-right, bottom-right, bottom-left.
+    """Order 4 points as top-left, top-right, bottom-right, bottom-left.
 
-    The points are sorted clockwise by their angle around the centre, which gives four
-    different corners however the shape is rotated, and the list starts at the point
-    nearest the photo's top-left (smallest x+y).
+    The points are sorted clockwise by angle around their centre, starting from the one nearest
+    the photo's top-left (smallest x+y), so a rotated shape still gets four different corners.
     """
     pts = np.asarray(pts, dtype=np.float32).reshape(4, 2)
     centre = pts.mean(axis=0)
@@ -38,7 +32,7 @@ def order_corners(pts: np.ndarray) -> np.ndarray:
 
 
 def is_a_usable_quad(corners: np.ndarray, image_shape: tuple, min_area_frac: float = 0.005) -> bool:
-    """True if `corners` are four finite points forming a convex shape that covers a real part of the photo."""
+    """True if `corners` are four finite points forming a convex shape of reasonable size."""
     pts = np.asarray(corners, dtype=np.float32).reshape(4, 2)
     if not np.all(np.isfinite(pts)):
         return False
@@ -48,7 +42,10 @@ def is_a_usable_quad(corners: np.ndarray, image_shape: tuple, min_area_frac: flo
 
 
 def shrink_to_width(img: np.ndarray, width: int) -> tuple[np.ndarray, float]:
-    """A copy of `img` no wider than `width` px (searching is faster on a small copy), and the shrink factor."""
+    """A copy of `img` no wider than `width` px, and the factor it was shrunk by.
+
+    Searching is faster on a small copy.
+    """
     scale = width / img.shape[1] if img.shape[1] > width else 1.0
     if scale == 1.0:
         return img, scale
@@ -56,7 +53,7 @@ def shrink_to_width(img: np.ndarray, width: int) -> tuple[np.ndarray, float]:
 
 
 def find_edge_maps(img: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Where the brightness changes sharply: the thin edge map, and a thickened copy that forgives near misses."""
+    """The thin edge map of `img`, and a thickened copy that forgives lines that are slightly off."""
     gray = cv2.GaussianBlur(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), (5, 5), 0)
     edges = cv2.Canny(gray, 30, 100)
     return edges, cv2.dilate(edges, np.ones((5, 5), np.uint8))
@@ -135,7 +132,10 @@ def where_ray_leaves_photo(start: np.ndarray, direction: np.ndarray, width: int,
 
 
 def part_of_segment_in_photo(p: np.ndarray, q: np.ndarray, width: int, height: int):
-    """The part of the segment p-q inside the photo, as (start, end), or None. Either end of p-q may be off-photo."""
+    """The part of segment p-q inside the photo, as (start, end), or None.
+
+    Either end of p-q may be off the photo.
+    """
     if max(np.abs(p).max(), np.abs(q).max()) > 1e8:           # too far out for OpenCV's integer maths
         return None
     ok, a, b = cv2.clipLine((0, 0, width - 1, height - 1), tuple(int(v) for v in p), tuple(int(v) for v in q))

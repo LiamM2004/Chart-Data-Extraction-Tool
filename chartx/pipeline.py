@@ -1,11 +1,8 @@
-"""
-pipeline.py - the processing steps, in order. Later stages chain on here.
+"""The processing steps in order: straighten the photo, then clean up its glare.
 
     result = preprocess(photo)
-    result.image          # straightened, then glare-cleaned
-    result.straightened   # how the straightening went (corners, rotation, warnings, ...)
-
-Requires: opencv-python, numpy
+    result.image          # the straightened, glare-cleaned photo
+    result.straightened   # how the straightening went (corners, rotation, warnings)
 """
 
 from __future__ import annotations
@@ -35,17 +32,20 @@ def preprocess(photo: np.ndarray,
                focal_frac: float = ASSUMED_FOCAL_FRAC,
                ask_for_corners: AskForCorners | None = None,
                clean_glare: bool = True) -> PreprocessResult:
-    """
-    Straighten the photo, then clean the glare off it.
+    """Straighten the photo, then clean the glare off it.
 
-    corners         - board corners if you already know them (skips finding them).
-    focal_frac      - the lens's focal length as a multiple of the photo's long side
-                      (see deskew); the default suits a phone's main camera.
-    ask_for_corners - optional hook for a person (or a UI) to place the corners. It is
-                      called after the first straightening attempt; if it returns
-                      corners, straightening is redone with them. Without it, a photo
-                      the tool can't place is flagged and left as it is.
-    clean_glare     - set False to stop after straightening.
+    Args:
+        photo: BGR photo, as returned by cv2.imread.
+        corners: Board corners, if already known; skips looking for them.
+        focal_frac: Lens focal length as a multiple of the photo's long side. The default
+            suits a phone's main camera.
+        ask_for_corners: Optional hook that lets a person or a UI place the corners. It is
+            called after the first attempt with (photo, result); corners it returns trigger a
+            second attempt. Without it, a photo that can't be placed is flagged and left as it is.
+        clean_glare: Set False to stop after straightening.
+
+    Returns:
+        The final image, plus the details of the straightening step.
     """
     straightened = deskew(photo, corners=corners, focal_frac=focal_frac)
     if corners is None and ask_for_corners is not None:

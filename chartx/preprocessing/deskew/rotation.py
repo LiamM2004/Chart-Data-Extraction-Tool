@@ -1,15 +1,10 @@
-"""
-rotation.py - work out how far a photo is tilted, so it can be levelled.
+"""Measure how tilted a photo is, so it can be levelled.
 
-Two ways to measure the tilt, depending on what the chart has:
-
-    tilt_from_chart_axes(find_long_straight_lines(img))   # bar / line charts: the "L" of the two axes
+    tilt_from_chart_axes(find_long_straight_lines(img))   # bar and line charts: the "L" of the axes
     tilt_from_writing(img, pie)                           # pie charts: no axes, so use the text rows
 
-Tilt is in degrees; positive means the image is tilted counter-clockwise, so
-rotate it by minus that to level it.
-
-Requires: opencv-python, numpy
+Tilt is in degrees, positive when the image is tilted counter-clockwise; rotate by minus
+that to level it.
 """
 
 from __future__ import annotations
@@ -18,9 +13,6 @@ import cv2
 import numpy as np
 
 
-# --------------------------------------------------------------------------- #
-# Finding the marker ink and its long straight lines
-# --------------------------------------------------------------------------- #
 def find_ink(img: np.ndarray) -> np.ndarray:
     """
     Binary mask of marker ink (white = ink). Adaptive thresholding copes with
@@ -50,10 +42,10 @@ def _without_ink_touching_the_border(mask: np.ndarray) -> np.ndarray:
 
 
 def find_long_straight_lines(img: np.ndarray, min_len_frac: float = 0.25, ignoring_pie=None) -> np.ndarray:
-    """
-    Long straight segments of ink, as an Nx4 array of (x1, y1, x2, y2).
-    Pass a pie (from find_pie_ellipse) as `ignoring_pie` to leave its hatching and
-    outline out: strokes inside a pie can line up into a convincing but false "L".
+    """Long straight segments of ink, as an Nx4 array of (x1, y1, x2, y2).
+
+    Pass a pie as `ignoring_pie` to leave it out: strokes inside a pie can line up into a
+    convincing but false "L".
     """
     mask = find_ink(img)
     if ignoring_pie is not None:
@@ -66,23 +58,16 @@ def find_long_straight_lines(img: np.ndarray, min_len_frac: float = 0.25, ignori
     return np.empty((0, 4), int) if lines is None else lines.reshape(-1, 4)
 
 
-# --------------------------------------------------------------------------- #
-# Tilt from the chart's axes
-# --------------------------------------------------------------------------- #
 def tilt_from_chart_axes(lines: np.ndarray, max_tilt: float = 20.0,
                          max_shear: float = 8.0, corner_frac: float = 0.15) -> float | None:
-    """
-    Estimate the image tilt (degrees) from the chart's axes.
+    """Estimate the image tilt (degrees) from the chart's axes.
 
-    The axes are the longest near-horizontal and near-vertical segments that
-    meet in a corner (an "L"): handwritten labels, titles and legends have long
-    straight-ish strokes too, but nothing perpendicular joining them. The two
-    axes' deviations from level are averaged, weighted by length, so a freehand
-    pair that isn't quite square is levelled evenly. Hough reports one stroke as
-    several overlapping segments, so near-identical segments are counted once.
+    The axes are the longest near-horizontal and near-vertical segments that meet in a corner
+    (an "L"); labels and titles have long strokes too, but nothing perpendicular joining them.
+    The two deviations are averaged, weighted by length.
 
-    Returns None when no L is found - e.g. a pie chart - and the caller should
-    leave the image as it is (or try tilt_from_writing).
+    Returns:
+        The tilt, or None if no L is found (for example a pie chart; see tilt_from_writing).
     """
     near_axis = _segments_near_level_or_upright(lines, max_tilt)
     if near_axis is None:
@@ -178,26 +163,17 @@ def _distance_from_point_to_segment(point: np.ndarray, segment: np.ndarray) -> f
     return float(np.linalg.norm(point - (start + along * direction)))
 
 
-# --------------------------------------------------------------------------- #
-# Tilt from the writing (pie charts)
-# --------------------------------------------------------------------------- #
 def tilt_from_writing(img: np.ndarray, pie, max_tilt: float = 10.0, step: float = 0.25,
                       min_peak: float = 1.4) -> float | None:
-    """
-    Estimate the image tilt (degrees) from the writing, for a pie chart, which
-    has no axes to level on.
+    """Estimate the image tilt (degrees) from the writing, for a pie chart, which has no axes.
 
-    Titles, legends and labels are written in rows. Rotate the ink through
-    `max_tilt` either way and the angle at which the rows are sharpest (the row
-    profile of the ink has the most variance) is the angle at which the text is
-    level. The pie itself is blanked out first: its outline and hatching point
-    every which way and would blur the peak.
+    Rotates the ink through +-`max_tilt` and picks the angle where the text rows are sharpest
+    (most variance in the row profile). The pie is blanked out first, so its outline and hatching
+    don't blur the peak.
 
-    Handwriting is noisy and bar or line charts can carry sideways text, so
-    this is only meant for a pie with no axes. Returns None unless the peak is
-    well inside the search range and clearly above a typical angle's score
-    (`min_peak` times the median): real writing scored 1.7-2.6 on our photos, a
-    scatter of specks only 1.05-1.14.
+    Returns:
+        The tilt, or None unless the peak is inside the search range and at least `min_peak`
+        times the median score (real writing scores about 2 on the sample photos, specks about 1.1).
     """
     ink = _ink_without_the_pie(img, pie)
     if ink is None:
@@ -222,7 +198,10 @@ def _ink_without_the_pie(img: np.ndarray, pie) -> np.ndarray | None:
 
 
 def _erase_the_pie(mask: np.ndarray, pie, scale: float = 1.0):
-    """Blank out the pie (a little wider than its outline) from an ink mask that is `scale` times the photo's size."""
+    """Blank the pie, plus a margin, out of an ink mask.
+
+    `scale` is the mask's size relative to the photo.
+    """
     (cx, cy), (d0, d1), angle = pie
     cv2.ellipse(mask, ((cx * scale, cy * scale), (d0 * scale * 1.15, d1 * scale * 1.15), angle), 0, -1)
 
@@ -235,9 +214,6 @@ def _how_row_like_the_ink_is(ink: np.ndarray, rotate_by_deg: float) -> float:
     return float((rows ** 2).sum())
 
 
-# --------------------------------------------------------------------------- #
-# Applying a rotation
-# --------------------------------------------------------------------------- #
 def rotation_transform(shape: tuple, angle_deg: float) -> tuple[np.ndarray, tuple[int, int]]:
     """3x3 matrix rotating an image of `shape` by angle_deg (CCW positive) without cropping corners."""
     h, w = shape[:2]

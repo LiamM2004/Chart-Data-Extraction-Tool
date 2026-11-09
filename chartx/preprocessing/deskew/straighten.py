@@ -1,27 +1,10 @@
-"""
-straighten.py - straighten a photo of a hand-drawn whiteboard chart.
+"""Straighten a photo of a hand-drawn whiteboard chart.
 
-It works in three moves:
+The three steps (fix perspective, round off pies, level the chart) are each measured on a
+quick preview and recorded as a matrix; the matrices are combined and the photo is
+resampled once, which keeps it sharper. See the README, "How straightening works".
 
-    1. Fix perspective  - find the board's four corners and warp them back to a
-                          rectangle (if only part of the board is in shot, the
-                          visible part is straightened; a board seen at a steep
-                          angle is straightened from three of its edges). If the
-                          board can't be found with confidence, the photo is left
-                          alone and the caller should ask for corners (see
-                          corner_editor.py).
-    2. Round off pies   - a pie's outline should be a circle; stretch away any
-                          squash the board warp left behind.
-    3. Level the chart  - rotate so the chart's axes are horizontal and vertical
-                          (a pie has no axes, so its writing is used instead).
-
-Each move is worked out on a quick preview and recorded as a matrix. The
-matrices are combined and the photo is resampled once, which keeps it sharper
-than warping it three times.
-
-    result = deskew(photo)            # result.image is the straightened photo
-
-Requires: opencv-python, numpy
+    result = deskew(photo)    # result.image is the straightened photo
 """
 
 from __future__ import annotations
@@ -44,47 +27,54 @@ MIN_ROTATION_DEG = 0.2
 # A pie outline this much off round (long/short axis) is stretched back to a circle.
 PIE_MIN_STRETCH = 1.03
 
-# Auto-detected corners with less edge support than this need a human look.
-# Chosen from a handful of photos (good ones scored 0.56-0.79, bad ones 0.11-0.13).
+# Auto-detected corners with less edge support than this (0-1) need a human look.
+# Tuned on the sample photos.
 REVIEW_BELOW = 0.4
 
 
 @dataclass
 class DeskewResult:
-    image: np.ndarray                       # final corrected image
-    corners: np.ndarray | None              # board corners (TL, TR, BR, BL) in input coords; if
-                                            # corner_source is "none", only a suggestion, not applied
-    corner_source: str                      # "auto", "partial", "steep", "manual", "provided" or "none" (not warped)
-    confidence: float                       # auto-detection edge support, 0-1 (1.0 if corners were given)
-    needs_review: bool                      # True if a human should check/adjust the corners
-    rotation_deg: float                     # rotation applied when levelling the chart
+    """The outcome of deskew().
+
+    Attributes:
+        image: The corrected image (the original, untouched, if the board wasn't found).
+        corners: Board corners TL, TR, BR, BL in input coordinates. When corner_source is
+            "none" this is only a suggestion and was not applied.
+        corner_source: "auto", "partial", "steep", "manual", "provided" or "none".
+        confidence: Edge support for the corners, 0-1 (1.0 if they were given).
+        needs_review: True if a person should check or adjust the corners.
+        rotation_deg: Rotation applied when levelling the chart.
+        warnings: Messages for the user.
+        pie_stretch: Stretch applied to make a pie round (1.0 = none).
+    """
+
+    image: np.ndarray
+    corners: np.ndarray | None
+    corner_source: str
+    confidence: float
+    needs_review: bool
+    rotation_deg: float
     warnings: list = field(default_factory=list)
-    pie_stretch: float = 1.0                # stretch applied to make a pie round (1.0 = none)
+    pie_stretch: float = 1.0
 
 
-# --------------------------------------------------------------------------- #
-# The whole pipeline
-# --------------------------------------------------------------------------- #
 def deskew(img: np.ndarray, corners: np.ndarray | None = None,
            focal_frac: float = ASSUMED_FOCAL_FRAC) -> DeskewResult:
-    """
-    Straighten a photo of a whiteboard chart.
+    """Straighten a photo of a whiteboard chart.
 
-    corners - optional user-supplied board/chart corners (any order). Pass these
-              from your UI when auto-detection fails.
-    focal_frac - the lens's focal length as a multiple of the photo's long side. The default
-              suits a phone's main camera; an ultra-wide or zoom lens needs its own value.
+    Args:
+        img: BGR photo, as returned by cv2.imread. Grayscale and alpha images are converted.
+        corners: Board or chart corners (any order), e.g. from a UI, if already known.
+        focal_frac: Lens focal length as a multiple of the photo's long side. The default
+            suits a phone's main camera; an ultra-wide or zoom lens needs its own value.
 
-    If the whole board isn't in the photo but three of its edges are, only the
-    visible part is straightened (corner_source "partial"), or, when the board is
-    seen at a steep angle with its corners out of shot, it is straightened from
-    those three edges (corner_source "steep").
+    Returns:
+        A DeskewResult. If the board can't be found with confidence, `needs_review` is set, the
+        photo is returned untouched and `corners` holds the best guess (or None). Ask the user
+        for corners (see select_corners_manually) and call again with `corners=`.
 
-    If auto-detection is not confident, `needs_review` is set, the photo is
-    returned untouched and `corners` holds the best guess (or None). A guess we
-    don't trust can warp the chart out of frame - a quad over the wall, say - so
-    the caller should let the user adjust the corners (see
-    select_corners_manually) and call again with `corners=`.
+    Raises:
+        ValueError: If `img` can't be a photo (not an 8-bit array with 1, 3 or 4 channels).
     """
     img = _as_bgr_photo(img)
     corners, source, confidence, warnings = _locate_board(img, corners, focal_frac)
@@ -122,12 +112,11 @@ def _as_bgr_photo(img) -> np.ndarray:
 
 
 def _locate_board(img: np.ndarray, given_corners: np.ndarray | None, focal_frac: float):
-    """
-    Decide where the board is. Returns (corners, source, confidence, warnings).
-    Tries, in order: the corners we were given, a whole board found by its edges,
-    then a board with its far side or corners out of shot, found from three of its
-    edges. The corners returned may be a weak guess (or None); the caller checks
-    the confidence.
+    """Decide where the board is: the corners given, else a whole board, else one found from three edges.
+
+    Returns:
+        (corners, source, confidence, warnings). The corners may be a weak guess or None; the
+        caller checks the confidence.
     """
     if given_corners is not None:
         if not is_a_usable_quad(given_corners, img.shape):
@@ -157,7 +146,10 @@ def _three_edge_warning(source: str, focal_frac: float) -> str:
 
 
 def _the_pie_after(stretch: np.ndarray, pie):
-    """Where the pie ends up after the round-off stretch: a circle as wide as its long axis, at the moved centre."""
+    """Where the pie ends up after the round-off stretch.
+
+    It is now a circle as wide as its old long axis, at the moved centre.
+    """
     (cx, cy), (d0, d1), _ = pie
     x, y, _ = stretch @ np.array([cx, cy, 1.0])
     diameter = max(d0, d1)
@@ -165,10 +157,10 @@ def _the_pie_after(stretch: np.ndarray, pie):
 
 
 class _PhotoCorrection:
-    """
-    A photo plus the single combined transform that straightens it, built up one
-    step at a time. Each step is measured on a quick preview of the result so
-    far; the full-quality image is only produced once, at the end.
+    """A photo plus the one combined transform that straightens it, built up a step at a time.
+
+    Each step is measured on a quick preview of the result so far; the full-quality image is
+    only produced once, at the end.
     """
 
     def __init__(self, img: np.ndarray, board_corners: np.ndarray, focal_frac: float):
@@ -179,9 +171,8 @@ class _PhotoCorrection:
         self._pie = None
         self._pie_searched = False
 
-    # ---- the steps ------------------------------------------------------ #
     def round_off_the_pie(self) -> float:
-        """If there is a pie that is still squashed, stretch it back to a circle. Returns the stretch (1.0 = none)."""
+        """Stretch a still-squashed pie back to a circle. Returns the stretch (1.0 = none)."""
         pie = self._the_pie()
         if pie is None or max(pie[1]) / min(pie[1]) < PIE_MIN_STRETCH:
             return 1.0
@@ -213,7 +204,6 @@ class _PhotoCorrection:
         """The corrected photo, resampled once at full quality."""
         return self._render(cv2.INTER_CUBIC)
 
-    # ---- helpers -------------------------------------------------------- #
     @property
     def preview(self) -> np.ndarray:
         """A quick, lower-quality render of the corrections so far (used to measure the next step)."""

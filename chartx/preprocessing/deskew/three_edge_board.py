@@ -1,33 +1,11 @@
-"""
-three_edge_board.py - find the board from three of its edges, when its corners aren't all in shot.
+"""Find the board from three of its edges, when its corners aren't all in shot.
 
-The whole-board finder (board.py) needs all four sides. Often the top edge, the
-bottom edge and one side edge are in view, but not the far side, and sometimes
-not the corners either. Those three edges are enough to rectify the part of
-the board that is in the photo. There are two ways to build the missing side,
-and which one is used depends on how strongly the top and bottom edges converge
-in the photo:
+The top edge, bottom edge and one side edge are enough to straighten the visible part of the
+board. Two methods build the missing side, chosen by how strongly the top and bottom edges
+converge: "partial" (under 10 degrees; the sides are taken as parallel) and "steep" (10 degrees
+or more; uses the assumed camera). See the README, "How straightening works".
 
-    gently converging (under 10 degrees)  "partial"
-        There's little perspective, so the board's sides can be taken to be parallel.
-        The top and bottom edges are run out to the photo's border and a line parallel
-        to the visible side is dropped through that point. Needs no camera knowledge,
-        but a camera tilted well up or down leaves some vertical stretch behind.
-
-    strongly converging (10 degrees or more)  "steep"
-        The top and bottom edges are parallel in real life, so where they meet in the
-        photo is the direction "along the board". The side edge lies in a plane through
-        the camera, and the board's "up" must be square to "along", which pins "up"
-        down. With both known we know how the board is tilted and can turn it face-on.
-        This leans on the assumed camera (see ASSUMED_FOCAL_FRAC), but it works with the
-        corners out of shot and at steep angles.
-
-Either way the result is four corners (some possibly off the photo), the same as
-the other finders, so the rest of the pipeline doesn't change.
-
-    corners, confidence, source = find_three_edge_board(photo)     # source is "partial" or "steep"
-
-Requires: opencv-python, numpy
+    corners, confidence, source = find_three_edge_board(photo)    # source: "partial" or "steep"
 """
 
 from __future__ import annotations
@@ -47,9 +25,8 @@ from chartx.preprocessing.deskew.geometry import (
 # nearly parallel edges say too little about the board's tilt.
 MIN_CONVERGENCE_DEG = 10.0
 
-# How well the three visible edges must sit on real image edges for each method to be trusted.
-# The parallel-sides guess needs more than the camera-based maths: the good "partial" photos scored
-# 0.97+ and a bare wall 0.56; wrong "steep" guesses scored 0.43-0.55 and right ones 0.78 and up.
+# How well the three visible edges must sit on real image edges (0-1) for each method to be trusted.
+# The parallel-sides guess is the less certain method, so it asks for more.
 MIN_CONFIDENCE = {"partial": 0.8, "steep": 0.7}
 
 PARTIAL_MIN_VISIBLE_FRAC = 0.25    # each horizontal edge must show at least this share of the photo's width
@@ -69,16 +46,16 @@ class _Scene:
 def find_three_edge_board(img: np.ndarray,
                           focal_frac: float = ASSUMED_FOCAL_FRAC,
                           work_width: int = 1000) -> tuple[np.ndarray | None, float, str | None]:
-    """
-    Look for a board from three of its edges: two roughly horizontal (top and bottom) and one side.
+    """Find a board from two roughly horizontal edges (top and bottom) and one side edge.
 
-    Every combination is tried, with the board lying to either side of the side edge, and scored
-    by edge support along the visible part of each of the three edges. Only candidates that are
-    trustworthy for the method used (see MIN_CONFIDENCE) are considered.
+    Every combination is tried, with the board on either side of the side edge, and scored by the
+    edge support along the visible part of each edge. Only candidates that are trustworthy for
+    their method (see MIN_CONFIDENCE) count.
 
-    Returns (corners, confidence, source): corners ordered TL, TR, BR, BL in image coordinates
-    (possibly off the photo), the weakest edge's support (0-1), and "partial" or "steep" for the
-    method that was used. Returns (None, 0.0, None) if nothing trustworthy was found.
+    Returns:
+        (corners, confidence, source): corners ordered TL, TR, BR, BL (possibly off the photo), the
+        weakest edge's support (0-1), and "partial" or "steep". (None, 0.0, None) if nothing
+        trustworthy was found.
     """
     small, scale = shrink_to_width(img, work_width)
     edges, thick_edges = find_edge_maps(small)
@@ -95,7 +72,10 @@ def find_three_edge_board(img: np.ndarray,
 
 
 def _trusted_candidates(horizontals, verticals, scene: _Scene):
-    """Every (pair of horizontals, side) triple, with the board on either side: (score, confidence, corners, source)."""
+    """Candidate boards from every (two horizontals, side edge) triple, on either side of the side edge.
+
+    Yields (score, confidence, corners, source), keeping only those trustworthy for their method.
+    """
     for line_a, line_b in itertools.combinations(horizontals, 2):
         source = "steep" if _angle_between(line_a, line_b) >= MIN_CONVERGENCE_DEG else "partial"
         try_board = _steep_candidate if source == "steep" else _partial_candidate
@@ -110,9 +90,6 @@ def _angle_between(line_a, line_b) -> float:
     return float(np.degrees(abs(line_a[1] - line_b[1])))
 
 
-# --------------------------------------------------------------------------- #
-# "partial": the sides are taken to be parallel
-# --------------------------------------------------------------------------- #
 def _partial_candidate(top, bottom, side_line, board_is_to_the_right: bool, scene: _Scene):
     """
     Try the board lying to one side of the visible side edge, with its far side built parallel to it.
@@ -190,9 +167,6 @@ def _where_line_meets_line_through(line, p: np.ndarray, q: np.ndarray) -> np.nda
     return meeting[:2] / meeting[2] if abs(meeting[2]) > 1e-9 else None
 
 
-# --------------------------------------------------------------------------- #
-# "steep": the board is turned face-on using the camera
-# --------------------------------------------------------------------------- #
 def _steep_candidate(line_a, line_b, side_line, board_is_to_the_right: bool, scene: _Scene):
     """
     Try the board lying to one side of the side edge, turned face-on to find its corners.
@@ -225,22 +199,22 @@ def _face_on_homography(camera: np.ndarray, line_a, line_b, side_line) -> np.nda
     converging edges and its side edge. None if the three don't make sense.
     """
     to_directions = np.linalg.inv(camera)
-    converge_at = np.cross(as_homogeneous_line(line_a), as_homogeneous_line(line_b))      # where the edges meet
+    converge_at = np.cross(as_homogeneous_line(line_a), as_homogeneous_line(line_b))
     along = to_directions @ converge_at
     if np.linalg.norm(along) < 1e-9:
         return None
     along = _pointing(along / np.linalg.norm(along), axis=0)                  # towards the right
 
-    side_plane_normal = camera.T @ as_homogeneous_line(side_line)             # the plane through camera and side edge
+    side_plane_normal = camera.T @ as_homogeneous_line(side_line)
     up_down = np.cross(side_plane_normal, along)                              # in that plane, and square to "along"
     if np.linalg.norm(up_down) < 1e-9:
         return None
     up_down = _pointing(up_down / np.linalg.norm(up_down), axis=1)            # towards the bottom
 
-    facing = np.cross(along, up_down)                                         # the board's normal
-    if facing[2] < np.cos(np.radians(MAX_BOARD_TILT_DEG)):                    # turned away too far (or mirrored)
+    board_normal = np.cross(along, up_down)
+    if board_normal[2] < np.cos(np.radians(MAX_BOARD_TILT_DEG)):                    # turned away too far (or mirrored)
         return None
-    return camera @ np.vstack([along, up_down, facing]) @ to_directions
+    return camera @ np.vstack([along, up_down, board_normal]) @ to_directions
 
 
 def _pointing(direction: np.ndarray, axis: int) -> np.ndarray:

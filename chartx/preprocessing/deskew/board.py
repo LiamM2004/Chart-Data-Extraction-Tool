@@ -1,12 +1,9 @@
-"""
-board.py - find the whiteboard in a photo and work out how to straighten it.
+"""Find the whiteboard in a photo and work out how to straighten it.
 
-    corners, confidence = find_board_corners(photo)           # all four sides in shot
+    corners, confidence = find_board_corners(photo)    # all four sides in shot
     matrix, size = board_to_rectangle_transform(corners, photo.shape)
 
-(When a side of the board is out of shot, see three_edge_board.py.)
-
-Requires: opencv-python, numpy
+For a board with a side out of shot, see three_edge_board.
 """
 
 from __future__ import annotations
@@ -27,28 +24,21 @@ from chartx.preprocessing.deskew.geometry import (ASSUMED_FOCAL_FRAC, best_candi
 EDGE_TRIM_FRAC = 0.01
 
 
-# --------------------------------------------------------------------------- #
-# Finding the board
-# --------------------------------------------------------------------------- #
 def find_board_corners(img: np.ndarray,
                        min_area_frac: float = 0.08,
                        work_width: int = 1000) -> tuple[np.ndarray | None, float]:
-    """
-    Look for the board as the quadrilateral whose four sides all sit on strong edges.
+    """Find the board as the four-sided shape whose sides all sit on strong edges.
 
-    Candidates are built from pairs of near-horizontal and near-vertical lines.
-    Each is scored by how much of its outline is actually backed by edge pixels
-    (the board's frame is, the wall's imaginary outline is not), so the board
-    beats the bigger wall around it.
+    Args:
+        img: BGR photo.
+        min_area_frac: Smallest share of the photo the board may cover.
+        work_width: The search runs on a copy shrunk to this width, then scales back.
 
-    Returns (corners, confidence). Corners are ordered TL, TR, BR, BL, or None
-    if no candidate exists. Confidence is the edge support of the candidate's
-    weakest side (0-1), halved for each long edge-backed line that cuts through
-    the quad. It is low when a board edge is out of shot or the guess
-    overshoots the board; the corners are still returned as a starting point
-    for manual adjustment.
-
-    Works on a downscaled copy for speed, then scales the corners back up.
+    Returns:
+        (corners, confidence). Corners are ordered TL, TR, BR, BL, or None if there is no
+        candidate. Confidence (0-1) is the edge support of the weakest side, halved for each long
+        edge-backed line cutting through the shape. It is low when a board edge is out of shot;
+        the corners are still returned as a starting point for manual adjustment.
     """
     small, scale = shrink_to_width(img, work_width)
     edges, thick_edges = find_edge_maps(small)
@@ -94,11 +84,9 @@ def _rate_quad(quad, thick_edges, horizontal, vertical, horizontal_sides, vertic
 
 def _count_lines_cutting_through(quad: np.ndarray, edges: np.ndarray, horizontal, vertical,
                                  horizontal_sides, vertical_sides, near_px: float) -> int:
-    """
-    Count long, edge-backed lines that cut across the quad without being one of
-    its sides. A real board has none (its frame is the boundary); a quad that
-    overshoots the board - say it also takes in the wall below - has the
-    board's true edge running straight through it.
+    """Count long, edge-backed lines that cut across the quad without being one of its sides.
+
+    A real board has none; a quad that overshoots it has the board's true edge running through it.
     """
     width = (np.linalg.norm(quad[0] - quad[1]) + np.linalg.norm(quad[3] - quad[2])) / 2
     height = (np.linalg.norm(quad[0] - quad[3]) + np.linalg.norm(quad[1] - quad[2])) / 2
@@ -121,29 +109,23 @@ def _count_lines_cutting_through(quad: np.ndarray, edges: np.ndarray, horizontal
 def _part_of_line_inside_quad(line, quad: np.ndarray):
     """Endpoints of the part of `line` (rho, theta) inside the convex `quad`, or None."""
     n = np.array([np.cos(line[1]), np.sin(line[1])])
-    d = quad @ n - line[0]                        # signed distance of each corner
+    d = quad @ n - line[0]
     pts = [quad[i] + d[i] / (d[i] - d[(i + 1) % 4]) * (quad[(i + 1) % 4] - quad[i])
            for i in range(4) if d[i] * d[(i + 1) % 4] < 0]
     return (pts[0], pts[1]) if len(pts) == 2 else None
 
 
-# --------------------------------------------------------------------------- #
-# Straightening the board
-# --------------------------------------------------------------------------- #
 def estimate_aspect_ratio(corners: np.ndarray, image_shape: tuple,
                           focal_frac: float = ASSUMED_FOCAL_FRAC) -> float | None:
-    """
-    True width/height of the rectangle seen at `corners` (TL, TR, BR, BL).
+    """True width/height of the rectangle seen at `corners` (TL, TR, BR, BL).
 
-    From Zhang & He (2004), "Whiteboard scanning and image enhancement": a
-    rectangle's four corners fix its aspect ratio once the camera is known.
-    Their paper also estimates the focal length from the same corners, but
-    that goes unstable when a pair of sides is nearly parallel (it failed on a
-    near head-on photo here), so we assume a typical phone's main camera instead
-    (see ASSUMED_FOCAL_FRAC): `focal_frac` x the photo's long side. The ratio is
-    only mildly sensitive to it for a phone's main camera.
+    Uses Zhang & He (2004), "Whiteboard scanning and image enhancement": four corners fix a
+    rectangle's aspect ratio once the camera is known. Their focal-length estimate goes unstable
+    when two sides are nearly parallel, so the focal length is assumed instead (`focal_frac` x
+    the photo's long side; see ASSUMED_FOCAL_FRAC).
 
-    Returns None if the corners don't form a usable quad.
+    Returns:
+        The ratio, or None if the corners don't form a usable quad.
     """
     h, w = image_shape[:2]
     tl, tr, br, bl = (np.array([x, y, 1.0]) for x, y in order_corners(corners))
@@ -158,11 +140,11 @@ def estimate_aspect_ratio(corners: np.ndarray, image_shape: tuple,
 
 def board_to_rectangle_transform(corners: np.ndarray, image_shape: tuple,
                                  focal_frac: float = ASSUMED_FOCAL_FRAC) -> tuple[np.ndarray, tuple[int, int]]:
-    """
-    3x3 matrix taking the quadrilateral `corners` (TL, TR, BR, BL) to an upright
-    rectangle with the board's true proportions (see estimate_aspect_ratio),
-    with a thin margin trimmed off every side (see EDGE_TRIM_FRAC).
-    Returns (matrix, output size (w, h)).
+    """3x3 matrix taking `corners` (TL, TR, BR, BL) to an upright rectangle with the board's true
+    proportions, trimmed by EDGE_TRIM_FRAC on each side.
+
+    Returns:
+        (matrix, output size (w, h)).
     """
     tl, tr, br, bl = order_corners(corners)
     width = max(np.linalg.norm(tr - tl), np.linalg.norm(br - bl))

@@ -1,15 +1,12 @@
-"""
-main.py - the command line: straighten a photo of a chart and clean up its glare.
+"""Command line: straighten a photo of a chart and clean up its glare.
 
-    python -m chartx photo.jpg -o out/photo.png              # auto; opens the drag window if unsure
+    python -m chartx photo.jpg -o out/photo.png              # opens the drag window if unsure
     python -m chartx photo.jpg -o out/photo.png --manual     # always open the drag window
     python -m chartx photo.jpg -o out/photo.png --no-prompt  # never open a window (batch use)
     python -m chartx photo.jpg -o out/photo.png --corners 10,20 900,15 920,700 5,690
-    python -m chartx photo.jpg -o out/photo.png --focal 0.5  # lens focal length as a multiple of the long side
+    python -m chartx photo.jpg -o out/photo.png --focal 0.5  # lens focal length / photo's long side
     python -m chartx photo.jpg -o out/photo.png --no-glare   # stop after straightening
     python -m chartx photo.jpg -o out/photo.png --debug out/debug.png
-
-Requires: opencv-python, numpy
 """
 
 from __future__ import annotations
@@ -63,7 +60,7 @@ def _save_image(path: str, image: np.ndarray):
 
 
 def _ask_for_corners_unless_confident(always: bool):
-    """A hook for the pipeline: open the drag window when asked to, or when the board wasn't found with confidence."""
+    """A pipeline hook: open the drag window if asked to, or if the board wasn't found with confidence."""
     def ask(photo: np.ndarray, straightened: DeskewResult):
         if always or straightened.needs_review:
             # the window starts from our best guess, if there is one

@@ -1,15 +1,11 @@
-"""
-ellipse.py - refine perspective using a pie chart's outline.
+"""Find a pie chart's outline and use it to stretch away leftover squash.
 
-Under perspective a circle becomes an ellipse, so a pie's outline says how
-much stretch is left in the image. This runs *after* the board warp, when the
-pie is already close to round, so we can be strict about what counts as one:
-anything that isn't a nearly-complete, nearly-round outline is ignored.
+Under perspective a circle becomes an ellipse, so a pie's outline shows how much stretch is
+left. This runs after the board warp, when the pie is already close to round, so it is strict
+about what counts as a pie.
 
-    pie = find_pie_ellipse(img)                                   # None if no convincing pie
-    matrix, size, stretch = pie_to_circle_transform(pie, img.shape)   # stretch the short axis to match
-
-Requires: opencv-python, numpy
+    pie = find_pie_ellipse(img)                                       # None if no convincing pie
+    matrix, size, stretch = pie_to_circle_transform(pie, img.shape)
 """
 
 from __future__ import annotations
@@ -24,26 +20,23 @@ TOL = 2.5                # px (at working size) for a point to lie on the outlin
 GROW_TOL = TOL * 1.4     # looser, for gathering the rest of the outline once we have a good guess
 
 
-# --------------------------------------------------------------------------- #
-# Finding the pie
-# --------------------------------------------------------------------------- #
 def find_pie_ellipse(img: np.ndarray,
                      min_axis_ratio: float = 0.8,
                      min_coverage: float = 0.7,
                      min_radius_frac: float = 0.03,
                      max_radius_frac: float = 0.3,
                      iterations: int = 250):
-    """
-    Look for a pie's outline: a near-round, near-complete dark ellipse.
+    """Find a pie's outline: a near-round, near-complete dark ellipse.
 
-    Each large dark contour gets a RANSAC ellipse fit; the fit is then grown
-    using supporting points from every contour (gaps split an outline into
-    pieces) and refitted. Candidates must be nearly round (`min_axis_ratio`,
-    short/long axis), cover `min_coverage` of the perimeter and be a plausible
-    size, so a frame, a digit or a partial arc doesn't pass.
+    Args:
+        img: BGR image.
+        min_axis_ratio: Smallest short/long axis ratio accepted.
+        min_coverage: Smallest share of the perimeter that must be inked.
+        min_radius_frac, max_radius_frac: Plausible radius range, as a share of the long side.
+        iterations: RANSAC tries per dark contour.
 
-    Returns the ellipse in OpenCV's ((cx, cy), (d0, d1), angle) form, in the
-    coordinates of `img`, or None.
+    Returns:
+        The ellipse in OpenCV's ((cx, cy), (d0, d1), angle) form, in `img`'s coordinates, or None.
     """
     contours, scale = black_ink_contours(img)
     outlines = [c.reshape(-1, 2).astype(np.float32) for c in contours if len(c) >= 30]
@@ -127,7 +120,7 @@ def _best_ellipse_through_random_points(outline: np.ndarray, rules: _PieRules, r
 
 
 def _refit_using_all_ink(ellipse, all_ink: np.ndarray, rounds: int = 4):
-    """Gather every ink point near the ellipse (from any contour) and refit, so a gappy outline still counts as one."""
+    """Refit using every ink point near the ellipse, so an outline broken into pieces still counts."""
     for _ in range(rounds):
         near = all_ink[_distance_to_ellipse(all_ink, ellipse) < GROW_TOL]
         if len(near) < 20:
@@ -156,15 +149,14 @@ def _share_of_outline_covered(pts: np.ndarray, ellipse, tol: float, bins: int = 
     return len(set(((angle + np.pi) / (2 * np.pi) * bins).astype(int) % bins)) / bins
 
 
-# --------------------------------------------------------------------------- #
-# Making the pie round
-# --------------------------------------------------------------------------- #
 def pie_to_circle_transform(ellipse, shape: tuple) -> tuple[np.ndarray, tuple[int, int], float]:
-    """
-    3x3 matrix that stretches an image of `shape` along the ellipse's short axis
-    so the ellipse becomes a circle (the long axis is kept, so nothing is
-    downsampled). Returns (matrix, output size (w, h), stretch factor = long
-    axis / short axis). The matrix shifts the result so nothing is cut off.
+    """3x3 matrix that stretches an image of `shape` along the ellipse's short axis until the ellipse
+    is a circle.
+
+    The long axis is kept, so nothing is downsampled, and the result is shifted so nothing is cut off.
+
+    Returns:
+        (matrix, output size (w, h), stretch = long axis / short axis).
     """
     (cx, cy), (d0, d1), angle = ellipse
     target = max(d0, d1)

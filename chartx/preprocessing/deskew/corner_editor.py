@@ -1,11 +1,6 @@
-"""
-corner_editor.py - a small window for dragging the board's four corners into place.
+"""A window for dragging the board's four corners into place, for when it can't be found automatically.
 
-Used when the board can't be found automatically:
-
-    corners = select_corners_manually(photo, initial=best_guess)   # None if cancelled
-
-Requires: opencv-python, numpy
+    corners = select_corners_manually(photo, initial=best_guess)    # None if cancelled
 """
 
 from __future__ import annotations
@@ -17,16 +12,12 @@ from chartx.preprocessing.deskew.geometry import order_corners
 
 
 class CornerEditor:
-    """
-    State and drawing for the drag-the-corners window, kept apart from the
-    OpenCV window loop so it can be driven without a display.
+    """State and drawing for the drag-the-corners window.
 
-    The photo sits on a larger grey canvas so a handle can be dragged outside
-    it - for a board whose corner is out of shot. Each side is extended across
-    the canvas as a guide line, so you can line it up with a visible board edge
-    instead of judging the corner by eye, and a magnifier follows the active
-    handle. Coordinates handed in and out are in original image pixels and may
-    lie outside the photo.
+    Kept apart from the OpenCV loop so it can be driven without a display. The photo sits on a
+    larger grey canvas so a handle can be dragged off it (for a corner that is out of shot). Each
+    side is extended as a guide line, and a magnifier follows the active handle. Coordinates in
+    and out are original photo pixels and may lie outside the photo.
     """
     PAD = 0.3          # grey margin around the photo, as a fraction of its size
     GRAB = 25          # px radius for picking up a handle
@@ -59,7 +50,6 @@ class CornerEditor:
         return np.array([[w * margin, h * margin], [w * (1 - margin), h * margin],
                          [w * (1 - margin), h * (1 - margin)], [w * margin, h * (1 - margin)]])
 
-    # ---- input ---------------------------------------------------------- #
     def handle_mouse(self, event, x, y):
         if event == cv2.EVENT_LBUTTONDOWN:
             distances = [np.hypot(x - hx, y - hy) for hx, hy in self.handles]
@@ -92,7 +82,6 @@ class CornerEditor:
         """Corners (TL, TR, BR, BL) in original image pixels, possibly off-photo."""
         return order_corners((np.array(self.handles, np.float32) - self.offset) / self.scale)
 
-    # ---- drawing -------------------------------------------------------- #
     def render(self) -> np.ndarray:
         frame = self.base.copy()
         x0, y0, x1, y1 = self.photo_box
@@ -156,12 +145,10 @@ class CornerEditor:
 def select_corners_manually(img: np.ndarray,
                             initial: np.ndarray | None = None,
                             window: str = "Adjust the 4 corners") -> np.ndarray | None:
-    """
-    Desktop fallback: show the image with four draggable handles (see
-    CornerEditor). Returns the corners, which may lie outside the photo, or
-    None if cancelled.
-    (In a mobile/web front end you'd do the same thing in the UI and pass the
-    result to `deskew(..., corners=...)`.)
+    """Show the photo with four draggable corner handles; return the corners, or None if cancelled.
+
+    The corners may lie outside the photo. A web or mobile front end would do the same job in its
+    own UI and pass the result to deskew(..., corners=...).
     """
     editor = CornerEditor(img, initial)
     cv2.namedWindow(window)
