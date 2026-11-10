@@ -30,6 +30,9 @@ If the board can't be found with confidence, a window opens to drag its four cor
 (`--no-prompt` skips it for batch runs, `--manual` forces it). `--no-glare` stops after straightening,
 and `--focal` sets the lens (default: a phone's main camera). Run `python -m chartx --help` for all options.
 
+The detection thresholds were tuned with OpenCV 5.0.0.93, the version the automatic tests run on;
+other versions may shift borderline photos slightly.
+
 Sample chart photos (varied angles and lighting) live in `sample-images/`.
 
 ## How straightening works

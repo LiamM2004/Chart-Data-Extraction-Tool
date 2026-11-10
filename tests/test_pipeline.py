@@ -57,6 +57,11 @@ class PreprocessTests(unittest.TestCase):
         self.assertEqual(result.straightened.corner_source, "none")
         self.assertTrue(result.straightened.needs_review)
 
+    def test_corners_the_pipeline_rejected_are_not_labelled_manual(self):
+        collapsed = np.array([[500, 500], [501, 500], [501, 501], [500, 501]], np.float32)
+        result = preprocess(WALL, ask_for_corners=lambda photo, straightened: collapsed, clean_glare=False)
+        self.assertEqual(result.straightened.corner_source, "none")
+
     def test_the_hook_is_not_called_when_corners_are_given(self):
         asked = []
         result = preprocess(WALL, corners=BOARD_CORNERS,

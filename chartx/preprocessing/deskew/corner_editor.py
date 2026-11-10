@@ -152,15 +152,17 @@ def select_corners_manually(img: np.ndarray,
     """
     editor = CornerEditor(img, initial)
     cv2.namedWindow(window)
-    cv2.setMouseCallback(window, lambda event, x, y, flags, _: editor.handle_mouse(event, x, y))
     accepted = None
-    while True:
-        cv2.imshow(window, editor.render())
-        key = cv2.waitKey(20) & 0xFF
-        action = editor.handle_key(key) if key != 255 else None
-        if action == "accept":
-            accepted = editor.corners()
-        if action:
-            break
-    cv2.destroyWindow(window)
+    try:
+        cv2.setMouseCallback(window, lambda event, x, y, flags, _: editor.handle_mouse(event, x, y))
+        while True:
+            cv2.imshow(window, editor.render())
+            key = cv2.waitKey(20) & 0xFF
+            action = editor.handle_key(key) if key != 255 else None
+            if action == "accept":
+                accepted = editor.corners()
+            if action:
+                break
+    finally:
+        cv2.destroyWindow(window)                      # even if interrupted
     return accepted

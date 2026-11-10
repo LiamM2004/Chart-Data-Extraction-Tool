@@ -80,16 +80,17 @@ def _debug_view(original: np.ndarray, straightened: DeskewResult, final: np.ndar
 
 
 def _build_argument_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Straighten a photo of a whiteboard chart and clean up its glare.")
-    parser.add_argument("image")
-    parser.add_argument("-o", "--output", default="out.png")
+    parser = argparse.ArgumentParser(prog="python -m chartx",
+                                     description="Straighten a photo of a whiteboard chart and clean up its glare.")
+    parser.add_argument("image", help="the photo to straighten")
+    parser.add_argument("-o", "--output", default="out.png", help="where to save the result (default: out.png)")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--manual", action="store_true",
                       help="always open the drag-corners window, even if auto-detection is confident")
     mode.add_argument("--no-prompt", action="store_true",
                       help="never open a window; just warn when corners need review (for batch runs)")
     parser.add_argument("--corners", nargs=4, metavar="X,Y", type=_point,
-                        help="board corners in any order, e.g. 10,20 900,15 920,700 5,690")
+                        help="the board's four corners as x,y pairs, in any order, e.g. 10,20 900,15 920,700 5,690")
     parser.add_argument("--focal", type=_positive_number, metavar="FRAC",
                         help=f"lens focal length as a multiple of the photo's long side (default {ASSUMED_FOCAL_FRAC}, "
                              "a phone's main camera; an ultra-wide lens is about 0.4, a 2x zoom about 1.4)")

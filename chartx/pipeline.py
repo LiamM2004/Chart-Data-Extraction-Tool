@@ -52,7 +52,8 @@ def preprocess(photo: np.ndarray,
         picked = ask_for_corners(photo, straightened)
         if picked is not None:
             straightened = deskew(photo, corners=picked, focal_frac=focal_frac)
-            straightened.corner_source = "manual"
+            if straightened.corner_source == "provided":            # not "none": the corners may have been rejected
+                straightened.corner_source = "manual"
 
     image = glare.clean_whiteboard(straightened.image) if clean_glare else straightened.image
     return PreprocessResult(image, straightened)
