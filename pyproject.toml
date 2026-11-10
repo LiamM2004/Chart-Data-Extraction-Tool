@@ -10,13 +10,8 @@ requires-python = ">=3.10"
 dependencies = [
     "opencv-python",
     "numpy",
-    "matplotlib"
+    "matplotlib",  # used by the exploration notebook (chartx/preprocessing/whiteboard_clean.ipynb)
 ]
-
-[project.optional-dependencies]
-# OCR for tick labels (not used yet); pick one when the axis stage is built
-ocr = ["easyocr"]
-dev = ["pytest"]
 
 [tool.setuptools.packages.find]
 include = ["chartx*"]
