@@ -10,7 +10,7 @@ Extract data from photos of real-world charts.
 2. **Axis detection** - find the axes and plot area *(todo)*
 3. **Tick reading** - locate ticks and OCR their labels *(todo)*
 4. **Calibration** - fit pixel -> value mapping per axis *(todo)*
-5. **Extraction** - recover series from lines/points/bars *(todo)*
+5. **Extraction** - recover series from lines/points/bars *(WIP: bar charts in `chartx/detection/bar_graph.py`)*
 6. **Output** - CSV/JSON with confidence and warnings *(todo)*
 
 ## Setup
@@ -20,15 +20,30 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -e .
 ```
 
-## Example
+## Running
+
+From the project root, with the virtual environment active:
 
 ```
-python -m chartx sample-images/new_3.jpg -o out/photo.png --debug out/debug.png
+python -m chartx.main
 ```
 
-If the board can't be found with confidence, a window opens to drag its four corners into place
-(`--no-prompt` skips it for batch runs, `--manual` forces it). `--no-glare` stops after straightening,
-and `--focal` sets the lens (default: a phone's main camera). Run `python -m chartx --help` for all options.
+This reads the photo named by `path` near the top of `chartx/main.py` (change it to try another
+photo), straightens it, cleans up its glare, then looks for a bar chart. Each bar found is printed
+as a table row (position, size, height relative to the tallest bar, value and colour), and the
+cleaned photo opens in a matplotlib window. Bar values are measured against the top gridline,
+taken as 10 on an axis that starts at 0.
+
+If the board can't be found, the photo is used as it is, without straightening.
+
+## Tests
+
+```
+python -m unittest discover tests -v
+```
+
+Run one file with `-p test_main.py`, or tests whose names match a word with `-k glare`.
+The same command runs automatically on every pull request and every push to main.
 
 The detection thresholds were tuned with OpenCV 5.0.0.93, the version the automatic tests run on;
 other versions may shift borderline photos slightly.
@@ -46,8 +61,9 @@ combined, so the photo is resampled only once, which keeps it sharper.
      (`three_edge_board.py`). If the top and bottom edges converge by under 10 degrees, the sides
      are taken as parallel ("partial"). At 10 degrees or more, the board's tilt is worked out from
      where they converge, using an assumed phone camera ("steep").
-   - *Nothing found with confidence:* the photo is left untouched and flagged. A window opens to
-     drag the corners into place (`corner_editor.py`).
+   - *Nothing found with confidence:* the photo is left untouched and flagged. The corners can be
+     dragged into place by hand with `select_corners_manually` (`corner_editor.py`), but
+     `main.py` doesn't open this window at the moment.
 
    The board's true width-to-height ratio comes from its corners and the assumed camera
    (Zhang & He, 2004, "Whiteboard scanning and image enhancement").
@@ -57,17 +73,18 @@ combined, so the photo is resampled only once, which keeps it sharper.
    axes. A pie has no axes, so it is levelled on its writing (title and legend) instead.
 
 **The assumed camera.** Step 1 needs the lens's focal length. The default, 0.72 times the photo's
-long side, suits a phone's main camera. For another lens pass `--focal` (an ultra-wide is about 0.4,
-a 2x zoom about 1.4).
+long side, suits a phone's main camera. For another lens, pass `focal_frac=` to `deskew()` (an
+ultra-wide is about 0.4, a 2x zoom about 1.4).
 
 ## Layout
 
 ```
 chartx/
-  main.py             the command line (python -m chartx)
-  pipeline.py         the processing steps in order; later stages chain on here
+  main.py             run everything: preprocess a photo, detect a bar chart, print its bars
   preprocessing/
     deskew/           straighten a photo (see its __init__.py for a map of the files)
     glare.py          glare removal and white balance
-tests/                python3 -m unittest discover tests
+  detection/
+    bar_graph.py      find the bars in a bar chart and read their values
+tests/                python -m unittest discover tests -v
 ```

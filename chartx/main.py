@@ -15,107 +15,67 @@ import argparse
 from pathlib import Path
 
 import cv2
-import numpy as np
+import matplotlib.pyplot as plt
 
-from chartx.pipeline import preprocess
-from chartx.preprocessing.deskew import DeskewResult, select_corners_manually
-from chartx.preprocessing.deskew.geometry import ASSUMED_FOCAL_FRAC
+from chartx.detection import bar_graph
+from chartx.preprocessing import glare
+from chartx.preprocessing.deskew import deskew
+
+
+path = "sample-images/new_3.jpg"
+
+
+from dataclasses import fields
+
+
+# Display data for a graph or chart
+def print_table(rows):
+    """Print a list of dataclass objects as an aligned table."""
+    if not rows:
+        print("(no rows)")
+        return
+
+    headers = [f.name for f in fields(rows[0])]
+    cells = [["-" if getattr(r, h) is None else str(getattr(r, h)) for h in headers] for r in rows]
+    widths = [max(len(h), *(len(row[i]) for row in cells)) for i, h in enumerate(headers)]
+
+    def line(items):
+        return "  ".join(item.ljust(w) for item, w in zip(items, widths))
+
+    print(line(headers))
+    print(line(["-" * w for w in widths]))
+    for row in cells:
+        print(line(row))
+
+
+def preprocess(photo):
+    """Straighten a BGR photo of a chart, clean the glare off it, and return the result."""
+    straightened = deskew(photo).image
+    return glare.clean_whiteboard(straightened)
 
 
 def main():
-    parser = _build_argument_parser()
-    args = parser.parse_args()
-    if args.manual and args.corners:
-        parser.error("--manual and --corners can't be used together (--corners already says where the board is)")
-    photo = cv2.imread(args.image)
-    if photo is None:
-        raise SystemExit(f"Could not read {args.image}")
 
-    ask = None if args.no_prompt else _ask_for_corners_unless_confident(always=args.manual)
-    result = preprocess(photo,
-                        corners=np.array(args.corners, np.float32) if args.corners else None,
-                        focal_frac=args.focal if args.focal is not None else ASSUMED_FOCAL_FRAC,
-                        ask_for_corners=ask,
-                        clean_glare=not args.no_glare)
+    # Read in an image
+    image = cv2.imread(path)
+    if image is None:
+        print(f"Error: image at {path} not found")
+        exit(1)
 
-    _save_image(args.output, result.image)
-    straightened = result.straightened
-    print(f"corners: {straightened.corner_source}  rotation applied: {straightened.rotation_deg:+.2f} deg  "
-          f"pie stretch: {straightened.pie_stretch:.2f}")
-    for warning in straightened.warnings:
-        print("warning:", warning)
-    if args.debug:
-        _save_image(args.debug, _debug_view(photo, straightened, result.image))
+    # Straighten the image, then clean up its glare
+    result = preprocess(image)
 
+    # Check if this is a bar chart and get its data object list
+    bar_graph_data = bar_graph.detect_bar_graph(result)
 
-def _save_image(path: str, image: np.ndarray):
-    """Write the image, creating its folder if needed, and stop with a clear message if that fails."""
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-    try:
-        saved = cv2.imwrite(path, image)
-    except cv2.error:                                  # e.g. an extension OpenCV can't write
-        saved = False
-    if not saved:
-        raise SystemExit(f"Could not save {path} (use a .png or .jpg file name, in a folder you can write to)")
+    if bar_graph_data == None:
+        print("No bar graph found")
 
+    # Display the bar chart data
+    print_table(bar_graph_data)
 
-def _ask_for_corners_unless_confident(always: bool):
-    """A pipeline hook: open the drag window if asked to, or if the board wasn't found with confidence."""
-    def ask(photo: np.ndarray, straightened: DeskewResult):
-        if always or straightened.needs_review:
-            # the window starts from our best guess, if there is one
-            return select_corners_manually(photo, initial=straightened.corners)
-        return None
-    return ask
-
-
-def _debug_view(original: np.ndarray, straightened: DeskewResult, final: np.ndarray) -> np.ndarray:
-    """Side-by-side: the photo with the board corners drawn on | the final result."""
-    before = original.copy()
-    if straightened.corners is not None:
-        cv2.polylines(before, [straightened.corners.astype(np.int32)], True, (0, 200, 0), 4)
-    height = 600
-    panels = [cv2.resize(p, (int(p.shape[1] * height / p.shape[0]), height)) for p in (before, final)]
-    return np.hstack([panels[0], np.full((height, 10, 3), 255, np.uint8), panels[1]])
-
-
-def _build_argument_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="python -m chartx",
-                                     description="Straighten a photo of a whiteboard chart and clean up its glare.")
-    parser.add_argument("image", help="the photo to straighten")
-    parser.add_argument("-o", "--output", default="out.png", help="where to save the result (default: out.png)")
-    mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--manual", action="store_true",
-                      help="always open the drag-corners window, even if auto-detection is confident")
-    mode.add_argument("--no-prompt", action="store_true",
-                      help="never open a window; just warn when corners need review (for batch runs)")
-    parser.add_argument("--corners", nargs=4, metavar="X,Y", type=_point,
-                        help="the board's four corners as x,y pairs, in any order, e.g. 10,20 900,15 920,700 5,690")
-    parser.add_argument("--focal", type=_positive_number, metavar="FRAC",
-                        help=f"lens focal length as a multiple of the photo's long side (default {ASSUMED_FOCAL_FRAC}, "
-                             "a phone's main camera; an ultra-wide lens is about 0.4, a 2x zoom about 1.4)")
-    parser.add_argument("--no-glare", action="store_true", help="stop after straightening (skip the glare clean-up)")
-    parser.add_argument("--debug", help="save a side-by-side debug image here")
-    return parser
-
-
-def _point(text: str) -> tuple[float, float]:
-    """A corner given on the command line as "x,y"."""
-    try:
-        x, y = (float(v) for v in text.split(","))
-    except ValueError:
-        raise argparse.ArgumentTypeError(f"{text!r} is not a point; write it as x,y, for example 120,85")
-    return x, y
-
-
-def _positive_number(text: str) -> float:
-    try:
-        value = float(text)
-    except ValueError:
-        value = 0.0
-    if not value > 0:
-        raise argparse.ArgumentTypeError(f"{text!r} is not a positive number")
-    return value
+    plt.imshow(cv2.cvtColor(result, cv2.COLOR_BGR2RGB))
+    plt.show()
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
 """
-Tests for the command line (python -m chartx).
+Tests for chartx/main.py: the table printer, the preprocessing steps and the main run.
 
 Run from the project root:
 
@@ -8,75 +8,118 @@ Run from the project root:
 
 import contextlib
 import io
-import sys
-import tempfile
 import unittest
+from dataclasses import dataclass
 from pathlib import Path
 from unittest import mock
 
-import cv2
 import numpy as np
 
-from chartx.main import main
+from chartx import main as chartx_main
+from chartx.detection.bar_graph import Bar
+
+SAMPLE_BAR_CHART = str(Path(__file__).resolve().parent.parent / "sample-images" / "barchart_test.jpg")
 
 
-def run(*arguments):
-    """Run the command line with these arguments. Returns (exit code or None, printed text)."""
+def printed(function, *arguments):
+    """Call the function and return what it printed (and the exit code if it stopped, else None)."""
     shown = io.StringIO()
     code = None
-    with mock.patch.object(sys, "argv", ["chartx", *arguments]), \
-            contextlib.redirect_stdout(shown), contextlib.redirect_stderr(shown):
+    with contextlib.redirect_stdout(shown):
         try:
-            main()
+            function(*arguments)
         except SystemExit as stop:
             code = stop.code
     return code, shown.getvalue()
 
 
-class CommandLineTests(unittest.TestCase):
+@dataclass
+class Row:
+    name: str
+    value: float | None
+
+
+class PrintTableTests(unittest.TestCase):
+    def test_no_rows_says_so(self):
+        _, shown = printed(chartx_main.print_table, [])
+        self.assertEqual(shown, "(no rows)\n")
+
+    def test_prints_a_header_a_rule_and_one_line_per_row(self):
+        _, shown = printed(chartx_main.print_table, [Row("a", 1.5), Row("b", 2.0)])
+        lines = shown.splitlines()
+        self.assertEqual(len(lines), 4)
+        self.assertEqual(lines[0].split(), ["name", "value"])
+        self.assertTrue(set(lines[1].replace(" ", "")) == {"-"})
+        self.assertEqual(lines[2].split(), ["a", "1.5"])
+        self.assertEqual(lines[3].split(), ["b", "2.0"])
+
+    def test_columns_line_up_with_the_widest_entry(self):
+        _, shown = printed(chartx_main.print_table, [Row("short", 1), Row("a much longer name", 2)])
+        lines = shown.splitlines()
+        value_column = lines[0].index("value")
+        for line in lines[2:]:
+            self.assertNotEqual(line[value_column], " ", f"value not in its column: {line!r}")
+
+    def test_missing_values_are_shown_as_a_dash(self):
+        _, shown = printed(chartx_main.print_table, [Row("a", None)])
+        self.assertEqual(shown.splitlines()[2].split(), ["a", "-"])
+
+    def test_prints_bars_from_the_bar_graph_detector(self):
+        bar = Bar(1, 10, 20, 30, 40, 1.0, 7.5, "#ff0000")
+        _, shown = printed(chartx_main.print_table, [bar])
+        self.assertIn("relative_height", shown.splitlines()[0])
+        self.assertIn("#ff0000", shown.splitlines()[2])
+
+
+class PreprocessTests(unittest.TestCase):
+    def test_straightens_first_then_cleans_the_glare_off_the_straightened_image(self):
+        photo = np.zeros((10, 10, 3), np.uint8)
+        straightened = np.ones((8, 8, 3), np.uint8)
+        cleaned = np.full((8, 8, 3), 2, np.uint8)
+        with mock.patch.object(chartx_main, "deskew", return_value=mock.Mock(image=straightened)) as deskew, \
+                mock.patch.object(chartx_main.glare, "clean_whiteboard", return_value=cleaned) as clean:
+            result = chartx_main.preprocess(photo)
+        deskew.assert_called_once_with(photo)
+        clean.assert_called_once_with(straightened)
+        self.assertIs(result, cleaned)
+
+    def test_returns_a_colour_image_for_a_real_photo(self):
+        photo = np.full((300, 400, 3), 235, np.uint8)
+        result = chartx_main.preprocess(photo)
+        self.assertIsInstance(result, np.ndarray)
+        self.assertEqual(result.ndim, 3)
+        self.assertEqual(result.shape[2], 3)
+
+
+class MainTests(unittest.TestCase):
     def setUp(self):
-        self.folder = tempfile.TemporaryDirectory()
-        self.addCleanup(self.folder.cleanup)
-        photo = np.full((900, 1200, 3), 235, np.uint8)
-        cv2.line(photo, (200, 700), (1000, 700), (20, 20, 20), 5)
-        cv2.line(photo, (200, 700), (200, 150), (20, 20, 20), 5)
-        self.photo = str(Path(self.folder.name) / "photo.png")
-        cv2.imwrite(self.photo, photo)
-        self.whole_photo = ["0,0", "1200,0", "1200,900", "0,900"]
-
-    def test_saves_the_result_and_the_debug_image_creating_their_folder(self):
-        output = Path(self.folder.name) / "not" / "there" / "result.png"
-        debug = Path(self.folder.name) / "also" / "new" / "debug.png"
-        code, shown = run(self.photo, "-o", str(output), "--debug", str(debug), "--no-glare",
-                          "--corners", *self.whole_photo)
-        self.assertIsNone(code)
-        self.assertIsNotNone(cv2.imread(str(output)))
-        self.assertIsNotNone(cv2.imread(str(debug)))
-        self.assertIn("corners: provided", shown)
-
-    def test_a_save_that_fails_is_reported_not_ignored(self):
-        code, _ = run(self.photo, "-o", str(Path(self.folder.name) / "result.notanimage"), "--no-glare",
-                      "--corners", *self.whole_photo)
-        self.assertIn("Could not save", str(code))
+        # never open a plot window during the tests
+        patcher = mock.patch.object(chartx_main.plt, "show")
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_a_photo_that_cannot_be_read_is_reported(self):
-        code, _ = run(str(Path(self.folder.name) / "missing.png"), "-o", str(Path(self.folder.name) / "x.png"))
-        self.assertIn("Could not read", str(code))
+        with mock.patch.object(chartx_main, "path", "no/such/photo.jpg"):
+            code, shown = printed(chartx_main.main)
+        self.assertEqual(code, 1)
+        self.assertIn("no/such/photo.jpg", shown)
 
-    def test_manual_and_corners_together_are_refused(self):
-        code, shown = run(self.photo, "--manual", "--corners", *self.whole_photo)
-        self.assertEqual(code, 2)
-        self.assertIn("can't be used together", shown)
+    def test_finds_the_bars_in_the_sample_bar_chart_and_shows_the_result(self):
+        with mock.patch.object(chartx_main, "path", SAMPLE_BAR_CHART), \
+                mock.patch.object(chartx_main.plt, "imshow") as imshow:
+            code, shown = printed(chartx_main.main)
+        self.assertIsNone(code)
+        table = shown[shown.index("index"):].splitlines()
+        self.assertEqual(len(table) - 2, 5, f"expected 5 bars in:\n{shown}")
+        imshow.assert_called_once()
 
-    def test_a_focal_length_must_be_a_positive_number(self):
-        for bad in ("0", "-1", "wide"):
-            code, _ = run(self.photo, "--focal", bad, "--no-prompt")
-            self.assertEqual(code, 2, bad)
-
-    def test_a_corner_must_be_written_as_x_comma_y(self):
-        code, shown = run(self.photo, "--corners", "10;20", "900,15", "920,700", "5,690")
-        self.assertEqual(code, 2)
-        self.assertIn("is not a point", shown)
+    def test_a_photo_with_no_bars_prints_an_empty_table(self):
+        with mock.patch.object(chartx_main, "path", SAMPLE_BAR_CHART), \
+                mock.patch.object(chartx_main.bar_graph, "detect_bar_graph", return_value=[]), \
+                mock.patch.object(chartx_main.plt, "imshow"):
+            code, shown = printed(chartx_main.main)
+        self.assertIsNone(code)
+        self.assertIn("(no rows)", shown)
 
 
 if __name__ == "__main__":
