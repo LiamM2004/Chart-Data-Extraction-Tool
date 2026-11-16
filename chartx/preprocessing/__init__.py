@@ -1,1 +1,1 @@
-"""Geometric pre-processing: perspective and axis levelling."""
+"""Pre-processing: straighten the photo (the deskew package), then clean up its glare (glare.py)."""

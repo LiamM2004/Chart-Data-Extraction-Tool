@@ -1,6 +1,5 @@
 import cv2
 import numpy as np
-import matplotlib.pyplot as plt
 
 
 def estimate_background(image, block=24, percentile=90):
