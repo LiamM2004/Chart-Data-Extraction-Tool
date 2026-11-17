@@ -9,10 +9,7 @@
     python -m chartx photo.jpg -o out/photo.png --debug out/debug.png
 """
 
-from __future__ import annotations
-
-import argparse
-from pathlib import Path
+import sys
 
 import cv2
 import matplotlib.pyplot as plt
@@ -20,9 +17,6 @@ import matplotlib.pyplot as plt
 from chartx.detection import bar_graph
 from chartx.preprocessing import glare
 from chartx.preprocessing.deskew import deskew
-
-
-path = "sample-images/new_3.jpg"
 
 
 from dataclasses import fields
@@ -55,6 +49,11 @@ def preprocess(photo):
 
 
 def main():
+    # Get the image path from the command line
+    if len(sys.argv) < 2:
+        print("Usage: python -m chartx.main image.jpg")
+        exit(1)
+    path = sys.argv[1]
 
     # Read in an image
     image = cv2.imread(path)
@@ -75,6 +74,7 @@ def main():
     print_table(bar_graph_data)
 
     plt.imshow(cv2.cvtColor(result, cv2.COLOR_BGR2RGB))
+    plt.axis('off')
     plt.show()
 
 

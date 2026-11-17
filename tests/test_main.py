@@ -98,14 +98,20 @@ class MainTests(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
+    def test_no_photo_given_prints_the_usage(self):
+        with mock.patch("sys.argv", ["chartx.main"]):
+            code, shown = printed(chartx_main.main)
+        self.assertEqual(code, 1)
+        self.assertIn("Usage", shown)
+
     def test_a_photo_that_cannot_be_read_is_reported(self):
-        with mock.patch.object(chartx_main, "path", "no/such/photo.jpg"):
+        with mock.patch("sys.argv", ["chartx.main", "no/such/photo.jpg"]):
             code, shown = printed(chartx_main.main)
         self.assertEqual(code, 1)
         self.assertIn("no/such/photo.jpg", shown)
 
     def test_finds_the_bars_in_the_sample_bar_chart_and_shows_the_result(self):
-        with mock.patch.object(chartx_main, "path", SAMPLE_BAR_CHART), \
+        with mock.patch("sys.argv", ["chartx.main", SAMPLE_BAR_CHART]), \
                 mock.patch.object(chartx_main.plt, "imshow") as imshow:
             code, shown = printed(chartx_main.main)
         self.assertIsNone(code)
@@ -114,7 +120,7 @@ class MainTests(unittest.TestCase):
         imshow.assert_called_once()
 
     def test_a_photo_with_no_bars_prints_an_empty_table(self):
-        with mock.patch.object(chartx_main, "path", SAMPLE_BAR_CHART), \
+        with mock.patch("sys.argv", ["chartx.main", SAMPLE_BAR_CHART]), \
                 mock.patch.object(chartx_main.bar_graph, "detect_bar_graph", return_value=[]), \
                 mock.patch.object(chartx_main.plt, "imshow"):
             code, shown = printed(chartx_main.main)

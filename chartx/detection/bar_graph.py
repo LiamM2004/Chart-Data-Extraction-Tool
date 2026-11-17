@@ -48,7 +48,7 @@ def _clean_mask(mask, k_close, k_open):
 
 
 # Find all the bars (rectangles) in an image
-def detect_bars(image, min_bars=3, min_extent=0.85, baseline_tol=0.02):
+def detect_bars(image, min_bars=3, min_extent=0.8, baseline_tol=0.02):
     """Find bars. Returns an (n, 4) array of x, y, w, h sorted left -> right.
 
     A shape is a bar if it is a solid rectangle, not tiny, not touching the image
@@ -108,73 +108,67 @@ def _label_blobs(strip):
     return stats[1:, :4][(h >= 0.012 * height) & (h <= 0.05 * height) & (w <= 3 * h)]
 
 
-# Read the y-axis numbers and work out how many value units one pixel is worth
-def _axis_scale(image, boxes, axis_min=0, axis_max=10):
+# Find the rows of the gridlines / y-axis ticks, from the baseline (value 0) upwards
+def _gridlines(image, boxes, dark=150):
+    """Return the pixel rows of the gridlines, starting with the baseline.
+
+    Looks at the strip just left of the first bar, where the y-axis ticks, labels
+    and gridlines are, and counts the dark pixels on each row (vertical lines like
+    the y-axis itself are removed first). Rows with a peak in that count are
+    candidate gridlines. Gridlines are roughly evenly spaced up from the baseline,
+    so the longest evenly spaced run of peaks is taken as the axis. Stray marks,
+    titles and the whiteboard frame don't fit the spacing and are skipped.
     """
-    Calculate value per pixel using OpenCV horizontal gridline detection.
-    """
+    baseline = int(np.median(boxes[:, 1] + boxes[:, 3]))
+    first_bar = int(boxes[:, 0].min())
+    pad = max(3, int(0.005 * image.shape[0]))
+    left = max(0, int(first_bar - 1.5 * np.median(boxes[:, 2])))
 
-    baseline = np.median(boxes[:, 1] + boxes[:, 3])
+    # Dark pixels, minus anything tall and thin (the y-axis)
+    ink = (cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) < dark).astype(np.uint8)
+    tall = cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(3, int(0.05 * baseline))))
+    ink = cv2.subtract(ink, cv2.morphologyEx(ink, cv2.MORPH_OPEN, tall))
 
-    # Restrict image to the chart area
-    left = max(0, int(boxes[:, 0].min()) - 45)
-    right = min(
-        image.shape[1],
-        int((boxes[:, 0] + boxes[:, 2]).max()) + 10
-    )
+    # Fraction of dark pixels on each row of the strip, smoothed so tilted or dotted lines still show
+    profile = ink[:baseline, left:first_bar - pad].mean(axis=1)
+    k = max(3, int(0.01 * baseline) | 1)
+    profile = np.convolve(profile, np.ones(k) / k, "same")
 
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    # Peaks: highest row within k either side, and clearly above the background level
+    floor = np.median(profile)
+    peaks = [y for y in range(k, baseline - 2 * k)
+             if profile[y] - floor >= 0.1 * (profile.max() - floor)
+             and profile[y] == profile[y - k:y + k + 1].max()]
 
-    roi = gray[:int(baseline), left:right]
+    # Starting from the baseline and one peak, keep stepping up by the average spacing so far,
+    # taking the strongest peak near each expected row, until there isn't one
+    def run_from(peak):
+        rows = [baseline, peak]
+        while True:
+            spacing = (baseline - rows[-1]) / (len(rows) - 1)
+            expected = rows[-1] - spacing
+            near = [y for y in peaks if abs(y - expected) <= 0.25 * spacing]
+            if not near:
+                return rows
+            rows.append(max(near, key=lambda y: profile[y]))
 
-    edges = cv2.Canny(roi, 30, 100)
+    return max((run_from(p) for p in peaks), key=len, default=[baseline])
 
-    lines = cv2.HoughLinesP(
-        edges,
-        1,
-        np.pi / 180,
-        threshold=25,
-        minLineLength=20,  # Reduced from 60% of chart width
-        maxLineGap=20
-    )
 
-    if lines is None:
-        warnings.warn("No horizontal gridlines detected")
-        return None
+# Read the value at the top of each bar using the gridlines
+def _bar_values(image, boxes, axis_min=0, axis_max=10):
+    """Values at the bar tops, assuming the gridlines go evenly from axis_min to axis_max."""
+    rows = _gridlines(image, boxes)
+    if len(rows) < 3:      # need two gridlines above the baseline to trust the spacing
+        warnings.warn("No gridlines found, so bar values can't be read")
+        return [None] * len(boxes)
 
-    horizontal_lines = []
+    print(f"Gridline rows (bottom to top): {rows}")
 
-    for x1, y1, x2, y2 in lines.reshape(-1, 4):
-
-        line_length = abs(x2 - x1)
-
-        if (
-            abs(y2 - y1) <= 3
-            and line_length >= 20
-            and y1 < boxes[:, 1].min()
-        ):
-            horizontal_lines.append((y1 + y2) / 2)
-
-    if not horizontal_lines:
-        warnings.warn("No suitable horizontal gridlines found")
-        return None
-
-    # Top gridline represents maximum axis value
-    axis_top = max(horizontal_lines)
-
-    plot_height = baseline - axis_top
-
-    if plot_height <= 0:
-        warnings.warn("Invalid plot height")
-        return None
-
-    scale = (axis_max - axis_min) / plot_height
-
-    print(f"Axis top: {axis_top}")
-    print(f"Axis baseline: {baseline}")
-    print(f"Axis scale: {scale}")
-
-    return scale
+    # Interpolate between the gridlines either side of each bar top
+    # (np.interp needs increasing x, so flip the rows to negative)
+    values = np.linspace(axis_min, axis_max, len(rows))
+    return np.interp(-boxes[:, 1], -np.array(rows), values).round(2).tolist()
 
 
 # Get the colour of a bar (rectangle)
@@ -193,9 +187,9 @@ def detect_bar_graph(image, calibration=None, horizontal=False):
     Returns a list of `Bar` objects, left to right (an empty list if no bar graph
     is found).
 
-    Bar values are read automatically from the y-axis labels (needs pytesseract),
-    assuming the axis starts at 0. If they can't be read a warning is given and
-    `Bar.value` is None.
+    Bar values are read from the horizontal gridlines, assuming they go evenly
+    from 0 at the baseline to 10 at the top one. If no gridlines are found a
+    warning is given and `Bar.value` is None.
 
     calibration: optional manual override (y_px_1, value_1, y_px_2, value_2): the
         pixel rows of two axis ticks and their values.
@@ -219,13 +213,7 @@ def detect_bar_graph(image, calibration=None, horizontal=False):
         warnings.warn("Axis labels are not read for horizontal bars; pass calibration= for values")
         values = [None] * len(boxes)
     else:
-        scale = _axis_scale(image, boxes)
-
-        values = (
-            [None] * len(boxes)
-            if scale is None
-            else (h * scale).round(3).tolist()
-        )
+        values = _bar_values(image, boxes)
 
     return [Bar(i + 1, int(x[i]), int(y[i]), int(w[i]), int(h[i]),
                 round(float(relative[i]), 3), values[i], _bar_colour(image, boxes[i]))
