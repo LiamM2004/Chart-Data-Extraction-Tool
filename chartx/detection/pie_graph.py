@@ -113,43 +113,31 @@ def _colour_to_lines(image):
     """Pies with coloured sectors have no drawn dividers: a divider is only the edge between two colours.
     This paints the coloured area white and draws the colour edges in black, so the image looks like
     a black ink drawing. An image with no coloured area comes back unchanged."""
-    # 1. how colourful every pixel is: the biggest minus the smallest of B, G, R.
-    #    Grey, black and white pixels have three almost equal values, so they get about 0
-    chroma = image.max(axis=2) - image.min(axis=2)
+    # 1. the coloured pixels: the biggest minus the smallest of B, G, R is high (grey, black and
+    #    white get about 0). Averaging first bridges the white gaps between the hatching strokes
+    chroma = cv2.blur(image.max(axis=2) - image.min(axis=2), (FLAT_BLUR, FLAT_BLUR))
+    coloured = (chroma > CHROMA_MIN).astype(np.uint8)
 
-    # 2. the coloured pixels. Averaging first bridges the white gaps between the hatching strokes
-    average = cv2.blur(chroma, (FLAT_BLUR, FLAT_BLUR))
-    coloured = (average > CHROMA_MIN).astype(np.uint8) * 255
-
-    # 3. keep only the big coloured areas: small spots are colour noise of a scan
-    count, blobs, stats, _ = cv2.connectedComponentsWithStats(coloured)
-    for blob in range(1, count):                          # blob 0 is the background
-        if stats[blob, cv2.CC_STAT_AREA] < FILL_MIN * coloured.size:
-            coloured[blobs == blob] = 0
+    # 2. keep only the big coloured areas: small spots are colour noise of a scan
+    _, blobs, stats, _ = cv2.connectedComponentsWithStats(coloured)
+    big = stats[:, cv2.CC_STAT_AREA] >= FILL_MIN * coloured.size
+    big[0] = False                                        # blob 0 is the background
+    coloured = big[blobs]                                 # True/False per pixel
     if not coloured.any():
         return image                                      # no coloured sectors: nothing to do
 
-    # 4. the colour of every pixel: its hue (0-179) in bins of HUE_BIN, so labels 1, 2, ... 6.
-    #    The median blur flattens the hatching first. The hue stays the same between the
-    #    light and the dark streaks of a fill, so one fill gets one label
-    flat = cv2.medianBlur(image, FLAT_BLUR)
-    hue = cv2.cvtColor(flat, cv2.COLOR_BGR2HSV)[:, :, 0]
-    labels = hue // HUE_BIN + 1
-    labels[coloured == 0] = 0                             # 0 = not coloured
-    labels = cv2.medianBlur(labels, FLAT_BLUR)            # single pixels take the label around them
+    # 3. one label per fill: the hue (0-179) in bins of HUE_BIN -> 1, 2, ... 6, and 0 = not coloured.
+    #    The first median blur flattens the hatching (the hue is the same in the light and dark
+    #    streaks), the second one gives single pixels the label around them
+    hue = cv2.cvtColor(cv2.medianBlur(image, FLAT_BLUR), cv2.COLOR_BGR2HSV)[:, :, 0]
+    labels = cv2.medianBlur(np.where(coloured, hue // HUE_BIN + 1, 0).astype(np.uint8), FLAT_BLUR)
 
-    # 5. the dividers: where the label changes. Inside one fill the biggest and the smallest
-    #    label in a 5x5 window are the same, on a border (also colour|white) they are not
-    window = np.ones((5, 5), np.uint8)
-    biggest = cv2.dilate(labels, window)
-    smallest = cv2.erode(labels, window)
-    dividers = biggest != smallest
-
-    # 6. a black ink drawing: fills white, dividers black.
+    # 4. a black ink drawing: fills white, dividers black. A divider is where the label changes:
+    #    the morphological gradient (biggest - smallest label in a 5x5 window) is not 0 there.
     #    Black ink (the rim, the text) is not coloured, so it stays as it is
     out = image.copy()
-    out[coloured > 0] = 255
-    out[dividers] = 0
+    out[coloured] = 255
+    out[cv2.morphologyEx(labels, cv2.MORPH_GRADIENT, np.ones((5, 5), np.uint8)) > 0] = 0
     return out
 
 
