@@ -36,6 +36,15 @@ taken as 10 on an axis that starts at 0.
 
 If the board can't be found, the photo is used as it is, without straightening.
 
+Pie charts are not in `main.py` yet. To preprocess a photo and print the sectors of its pie chart:
+
+```
+python -m chartx.detection.pie_graph sample-images/IMG_1294.jpg
+```
+
+Pies with coloured sectors and no drawn dividers (like `IMG_1294.jpg`) are first turned into a black
+line drawing: every fill gets one label by its hue, and the borders between labels become the dividers.
+
 ## Tests
 
 ```

@@ -3,6 +3,8 @@
 Finds the sector dividers with the ReVision unroll (Savva et al. 2011) and reads the labels
 and percentages inside every sector with PaddleOCR. The steps:
 
+0. coloured sectors -> line drawing: a pie with coloured fills has no drawn dividers, so every
+   fill gets one label by its hue, the fill is painted white and the borders between labels black
 1. text removal: PaddleOCR boxes -> erase the ink inside the boxes, but keep the long straight
    lines and the pie rim. Result: clean ink mask
 2. Hough circle (centre + radius R) on the clean image
@@ -13,8 +15,7 @@ and percentages inside every sector with PaddleOCR. The steps:
    A divider is ink along the whole band -> a high peak
 6. every run of angles above PEAK = one divider, at the middle of the run
 7. sector size = angle between two dividers / 360
-8. a second OCR run for the labels, with a higher text_det_thresh: it keeps the gaps between words
-   open, so "Vegetables" and "10%" come as two boxes
+8. the same OCR boxes as in step 1 are used for the labels
 9. one text per sector: every box with its centre inside the circle goes to the sector it lies in.
    The boxes of a sector are read like a page (lines top to bottom, each line left to right)
 10. the percentage is read from the sector text. The OCR values are used only if every sector
@@ -24,8 +25,8 @@ All angles are in degrees, clockwise from 3 o'clock (the same as cv2.warpPolar).
 
 PaddleOCR is only imported when a pie graph is detected: loading it is slow.
 
-Print the sectors of one image:
-    python -m chartx.detection.pie_graph image.png
+Preprocess a photo (chartx.main.preprocess) and print the sectors of its pie graph:
+    python -m chartx.detection.pie_graph photo.jpg
 """
 import functools
 import math
@@ -58,10 +59,17 @@ BAND_IN = 0.2             # measure ink from this share of R ...
 BAND_OUT = 0.9            # ... to this share of R
 PEAK = 0.4                # a divider: at least 40 % of the band is ink (tested 30-60 %, 40 % is best)
 # labels
-LABEL_DET_THRESH = 0.6    # pixel is "text" if the detector is this sure (default 0.3). Tested 0.1-0.7:
-                          # 0.45+ splits "Vegetables 10%", 0.6 also finds single letters, 0.7 adds junk boxes
 SUM_TOL = 1.0             # the OCR values must add up to 100 +- this (rounding, e.g. 25+22+20+17+17 = 101)
 PERCENT = re.compile(r"(\d+(?:[.,]\d+)?)\s*%")
+# coloured sectors -> line drawing
+CHROMA_MIN = 15           # "coloured": max - min of B, G, R (averaged over FLAT_BLUR px) is above this.
+                          # IMG_1294 (cleaned): pale fills 25-34, black text <= 9, board 0. HSV saturation does
+                          # not work: it is high for dark pixels, so black text looked coloured
+FLAT_BLUR = 15            # px: median blur that turns a hatched fill into one flat colour
+FILL_MIN = 0.01           # a coloured area must be at least this share of the image. The fills of a pie touch,
+                          # so they are one big area (IMG_1294: 5.8 %); colour noise in scans (pie_11, pie_19) <= 0.22 %
+HUE_BIN = 30              # fills are told apart by hue in bins of this size (hue 0-179, so 6 bins).
+                          # IMG_1294: blue 108-111, green 77-84, pink 164-173. A red near 0/179 would be split
 
 
 # Object used for storing data for a sector
@@ -77,18 +85,16 @@ class Sector:
 
 # ---------------------------------------------------------------- OCR
 
-# Create PaddleOCR once per threshold (loading the models is slow)
+# Create PaddleOCR once (loading the models is slow)
 @functools.lru_cache(maxsize=None)
-def _paddle(det_thresh=None):
+def _paddle():
     """PaddleOCR with page rotation and unwarping switched off, otherwise the box coordinates
-    would belong to a changed image, not to ours. det_thresh=None keeps the default (0.3)."""
+    would belong to a changed image, not to ours. The other settings are the defaults."""
     from paddleocr import PaddleOCR   # imported here: loading it is slow, and only the pie detector needs it
     # enable_mkldnn=False: paddlepaddle 3.3.1 crashes in its oneDNN CPU path on Linux x86
     # ("ConvertPirAttribute2RuntimeAttribute not support"). Macs with Apple chips do not use oneDNN anyway
     settings = dict(use_doc_orientation_classify=False, use_doc_unwarping=False, use_textline_orientation=False,
                     enable_mkldnn=False)
-    if det_thresh is not None:
-        settings["text_det_thresh"] = det_thresh
     return PaddleOCR(**settings)
 
 
@@ -98,6 +104,53 @@ def _read_text(ocr, image):
     page = ocr.predict(image)[0]
     return [(poly.tolist(), text, score)
             for poly, text, score in zip(page["rec_polys"], page["rec_texts"], page["rec_scores"])]
+
+
+# ---------------------------------------------------------------- 0. coloured sectors -> line drawing
+
+# Turn coloured (hatched) sectors into a black line drawing
+def _colour_to_lines(image):
+    """Pies with coloured sectors have no drawn dividers: a divider is only the edge between two colours.
+    This paints the coloured area white and draws the colour edges in black, so the image looks like
+    a black ink drawing. An image with no coloured area comes back unchanged."""
+    # 1. how colourful every pixel is: the biggest minus the smallest of B, G, R.
+    #    Grey, black and white pixels have three almost equal values, so they get about 0
+    chroma = image.max(axis=2) - image.min(axis=2)
+
+    # 2. the coloured pixels. Averaging first bridges the white gaps between the hatching strokes
+    average = cv2.blur(chroma, (FLAT_BLUR, FLAT_BLUR))
+    coloured = (average > CHROMA_MIN).astype(np.uint8) * 255
+
+    # 3. keep only the big coloured areas: small spots are colour noise of a scan
+    count, blobs, stats, _ = cv2.connectedComponentsWithStats(coloured)
+    for blob in range(1, count):                          # blob 0 is the background
+        if stats[blob, cv2.CC_STAT_AREA] < FILL_MIN * coloured.size:
+            coloured[blobs == blob] = 0
+    if not coloured.any():
+        return image                                      # no coloured sectors: nothing to do
+
+    # 4. the colour of every pixel: its hue (0-179) in bins of HUE_BIN, so labels 1, 2, ... 6.
+    #    The median blur flattens the hatching first. The hue stays the same between the
+    #    light and the dark streaks of a fill, so one fill gets one label
+    flat = cv2.medianBlur(image, FLAT_BLUR)
+    hue = cv2.cvtColor(flat, cv2.COLOR_BGR2HSV)[:, :, 0]
+    labels = hue // HUE_BIN + 1
+    labels[coloured == 0] = 0                             # 0 = not coloured
+    labels = cv2.medianBlur(labels, FLAT_BLUR)            # single pixels take the label around them
+
+    # 5. the dividers: where the label changes. Inside one fill the biggest and the smallest
+    #    label in a 5x5 window are the same, on a border (also colour|white) they are not
+    window = np.ones((5, 5), np.uint8)
+    biggest = cv2.dilate(labels, window)
+    smallest = cv2.erode(labels, window)
+    dividers = biggest != smallest
+
+    # 6. a black ink drawing: fills white, dividers black.
+    #    Black ink (the rim, the text) is not coloured, so it stays as it is
+    out = image.copy()
+    out[coloured > 0] = 255
+    out[dividers] = 0
+    return out
 
 
 # ---------------------------------------------------------------- 1. text removal
@@ -362,10 +415,13 @@ def detect_pie_graph(image):
     scale = WORK_SIZE / max(image.shape[:2])
     image = cv2.resize(image, None, fx=scale, fy=scale,
                        interpolation=cv2.INTER_AREA if scale < 1 else cv2.INTER_CUBIC)
+    # 0. coloured sectors -> line drawing
+    image = _colour_to_lines(image)
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-    # 1.-3. text removal (default OCR threshold), circle and ink centre
-    clean = _remove_text(gray, _read_text(_paddle(), image))   # 255 = ink
+    # 1.-3. text removal, circle and ink centre
+    results = _read_text(_paddle(), image)
+    clean = _remove_text(gray, results)   # 255 = ink
     circle = _find_centre(255 - clean, clean)
     if circle is None or circle[1] is None:
         return []
@@ -379,19 +435,19 @@ def detect_pie_graph(image):
         return []
     found = _sectors(angles)
 
-    # 8.-10. one text per sector, percentages from it
-    texts = _text_per_sector(_read_text(_paddle(LABEL_DET_THRESH), image), centre, r, found)
+    # 8.-10. one text per sector (same OCR boxes), percentages from it
+    texts = _text_per_sector(results, centre, r, found)
     values, ok = _ocr_values(texts)
 
-    return [Sector(k + 1, round(start, 1), round(end, 1), round(value, 1),
+    return [Sector(k + 1, round(float(start), 1), round(float(end), 1), round(float(value), 1),
                    values[k][0] if ok else None, texts[k] or None)
             for k, (start, end, value) in enumerate(found)]
 
 
-# Print the sectors of one image
+# Preprocess a photo and print the sectors of its pie graph
 def main():
     if len(sys.argv) < 2:
-        print("Usage: python -m chartx.detection.pie_graph image.png")
+        print("Usage: python -m chartx.detection.pie_graph photo.jpg")
         exit(1)
     path = sys.argv[1]
 
@@ -399,6 +455,9 @@ def main():
     if image is None:
         print(f"Error: image at {path} not found")
         exit(1)
+
+    from chartx.main import preprocess   # imported here: chartx.main loads the whole pipeline (deskew, matplotlib)
+    image = preprocess(image)
 
     sectors = detect_pie_graph(image)
     if not sectors:
