@@ -12,9 +12,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 3.10 is the oldest that pyproject.toml allows; 3.14 is the version used for development so far.
+        # 3.10 is the oldest and 3.13 the newest that pyproject.toml allows (paddlepaddle has no 3.14 wheel).
         # Add any other version the team actually uses.
-        python-version: ["3.10", "3.14"]
+        python-version: ["3.10", "3.13"]
     steps:
       - uses: actions/checkout@v4
 
@@ -30,7 +30,6 @@ jobs:
       - name: Install the project
         run: |
           python -m pip install --upgrade pip
-          pip install "opencv-python==5.0.0.93"      # the OpenCV the thresholds were tuned on
           pip install -e .
 
       - name: Run the tests
