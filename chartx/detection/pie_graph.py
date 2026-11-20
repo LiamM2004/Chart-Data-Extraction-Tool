@@ -83,7 +83,10 @@ def _paddle(det_thresh=None):
     """PaddleOCR with page rotation and unwarping switched off, otherwise the box coordinates
     would belong to a changed image, not to ours. det_thresh=None keeps the default (0.3)."""
     from paddleocr import PaddleOCR   # imported here: loading it is slow, and only the pie detector needs it
-    settings = dict(use_doc_orientation_classify=False, use_doc_unwarping=False, use_textline_orientation=False)
+    # enable_mkldnn=False: paddlepaddle 3.3.1 crashes in its oneDNN CPU path on Linux x86
+    # ("ConvertPirAttribute2RuntimeAttribute not support"). Macs with Apple chips do not use oneDNN anyway
+    settings = dict(use_doc_orientation_classify=False, use_doc_unwarping=False, use_textline_orientation=False,
+                    enable_mkldnn=False)
     if det_thresh is not None:
         settings["text_det_thresh"] = det_thresh
     return PaddleOCR(**settings)
