@@ -1,4 +1,4 @@
-"""Command line: straighten a photo of a chart and clean up its glare.
+"""Command line: straighten a photo of a chart, clean up its glare and read its data.
 
     python -m chartx photo.jpg -o out/photo.png              # opens the drag window if unsure
     python -m chartx photo.jpg -o out/photo.png --manual     # always open the drag window
@@ -14,7 +14,7 @@ import sys
 import cv2
 import matplotlib.pyplot as plt
 
-from chartx.detection import bar_graph
+from chartx.detection import bar_graph, line_graph
 from chartx.preprocessing import glare
 from chartx.preprocessing.deskew import deskew
 
@@ -48,6 +48,24 @@ def preprocess(photo):
     return glare.clean_whiteboard(straightened)
 
 
+def extract(image):
+    """Read the data out of a preprocessed chart image.
+
+    Bars are looked for first, because a bar chart's axes would otherwise be followed as if
+    the bars were a line. Returns (what the chart is, the rows read off it); the chart is None
+    and the rows empty if neither kind was found.
+    """
+    bars = bar_graph.detect_bar_graph(image)
+    if bars:
+        return "bar chart", bars
+
+    points = line_graph.detect_line_graph(image)
+    if points:
+        return "line chart", points
+
+    return None, []
+
+
 def main():
     # Get the image path from the command line
     if len(sys.argv) < 2:
@@ -64,14 +82,14 @@ def main():
     # Straighten the image, then clean up its glare
     result = preprocess(image)
 
-    # Check if this is a bar chart and get its data object list
-    bar_graph_data = bar_graph.detect_bar_graph(result)
+    # Work out what kind of chart it is and read its data off
+    kind, rows = extract(result)
 
-    if bar_graph_data == None:
-        print("No bar graph found")
-
-    # Display the bar chart data
-    print_table(bar_graph_data)
+    if kind is None:
+        print("No bar chart or line chart found")
+    else:
+        print(f"Found a {kind}")
+    print_table(rows)
 
     plt.imshow(cv2.cvtColor(result, cv2.COLOR_BGR2RGB))
     plt.axis('off')

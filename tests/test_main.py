@@ -17,6 +17,7 @@ import numpy as np
 
 from chartx import main as chartx_main
 from chartx.detection.bar_graph import Bar
+from chartx.detection.line_graph import LinePoint
 
 SAMPLE_BAR_CHART = str(Path(__file__).resolve().parent.parent / "sample-images" / "barchart_test.jpg")
 
@@ -70,6 +71,12 @@ class PrintTableTests(unittest.TestCase):
         self.assertIn("relative_height", shown.splitlines()[0])
         self.assertIn("#ff0000", shown.splitlines()[2])
 
+    def test_prints_points_from_the_line_graph_detector(self):
+        point = LinePoint(1, "Jan", 10, 20, 7.5, "#0000ff")
+        _, shown = printed(chartx_main.print_table, [point])
+        self.assertIn("category", shown.splitlines()[0])
+        self.assertIn("Jan", shown.splitlines()[2])
+
 
 class PreprocessTests(unittest.TestCase):
     def test_straightens_first_then_cleans_the_glare_off_the_straightened_image(self):
@@ -89,6 +96,35 @@ class PreprocessTests(unittest.TestCase):
         self.assertIsInstance(result, np.ndarray)
         self.assertEqual(result.ndim, 3)
         self.assertEqual(result.shape[2], 3)
+
+
+class ExtractTests(unittest.TestCase):
+    """Which detector gets used, and what comes back."""
+
+    def setUp(self):
+        self.image = np.full((300, 400, 3), 235, np.uint8)
+        self.bar = Bar(1, 10, 20, 30, 40, 1.0, 7.5, "#ff0000")
+        self.point = LinePoint(1, "Jan", 10, 20, 7.5, "#0000ff")
+
+    def test_bars_are_reported_as_a_bar_chart(self):
+        with mock.patch.object(chartx_main.bar_graph, "detect_bar_graph", return_value=[self.bar]), \
+                mock.patch.object(chartx_main.line_graph, "detect_line_graph") as lines:
+            kind, rows = chartx_main.extract(self.image)
+        self.assertEqual(kind, "bar chart")
+        self.assertEqual(rows, [self.bar])
+        lines.assert_not_called()
+
+    def test_a_line_chart_is_looked_for_only_when_there_are_no_bars(self):
+        with mock.patch.object(chartx_main.bar_graph, "detect_bar_graph", return_value=[]), \
+                mock.patch.object(chartx_main.line_graph, "detect_line_graph", return_value=[self.point]):
+            kind, rows = chartx_main.extract(self.image)
+        self.assertEqual(kind, "line chart")
+        self.assertEqual(rows, [self.point])
+
+    def test_neither_kind_found(self):
+        with mock.patch.object(chartx_main.bar_graph, "detect_bar_graph", return_value=[]), \
+                mock.patch.object(chartx_main.line_graph, "detect_line_graph", return_value=[]):
+            self.assertEqual(chartx_main.extract(self.image), (None, []))
 
 
 class MainTests(unittest.TestCase):
@@ -115,16 +151,19 @@ class MainTests(unittest.TestCase):
                 mock.patch.object(chartx_main.plt, "imshow") as imshow:
             code, shown = printed(chartx_main.main)
         self.assertIsNone(code)
+        self.assertIn("Found a bar chart", shown)
         table = shown[shown.index("index"):].splitlines()
         self.assertEqual(len(table) - 2, 5, f"expected 5 bars in:\n{shown}")
         imshow.assert_called_once()
 
-    def test_a_photo_with_no_bars_prints_an_empty_table(self):
+    def test_a_photo_with_no_chart_on_it_prints_an_empty_table(self):
         with mock.patch("sys.argv", ["chartx.main", SAMPLE_BAR_CHART]), \
                 mock.patch.object(chartx_main.bar_graph, "detect_bar_graph", return_value=[]), \
+                mock.patch.object(chartx_main.line_graph, "detect_line_graph", return_value=[]), \
                 mock.patch.object(chartx_main.plt, "imshow"):
             code, shown = printed(chartx_main.main)
         self.assertIsNone(code)
+        self.assertIn("No bar chart or line chart found", shown)
         self.assertIn("(no rows)", shown)
 
 

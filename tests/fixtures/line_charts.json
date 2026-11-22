@@ -1,0 +1,63 @@
+{
+  "_comment": [
+    "Hand-read values for the line chart photos in sample-images/, used to measure how",
+    "accurate the extraction is (tests/test_line_graph.py and tests/check_accuracy.py).",
+    "",
+    "Each chart was straightened with chartx.main.preprocess, then value gridlines were drawn",
+    "over it every quarter of an axis step and the marker on each data point was read off by eye.",
+    "The charts are hand-drawn, so these are what was actually drawn, not round numbers the",
+    "artist may have meant: Mar on the coffee chart sits a shade above 150, and Jun a shade",
+    "below 195.",
+    "",
+    "'lines' is keyed by pen colour, because the charts have no legend saying which series is",
+    "which. 'photo' names a file in sample-images/.",
+    "",
+    "'tolerance' is a fraction of the y-axis range (max - min). The extraction currently comes",
+    "in at 1.3% on average and 4.5% at worst, so 6% leaves room for different builds of",
+    "Tesseract reading the axis labels slightly differently, without letting a real regression",
+    "through. Run tests/check_accuracy.py to see where it actually stands."
+  ],
+
+  "tolerance": 0.06,
+
+  "charts": [
+    {
+      "photo": "20261027_121850.jpg",
+      "title": "Monthly Coffee Sales",
+      "axis_range": [100, 200],
+      "categories": ["Jan", "Feb", "Mar", "Apr", "May", "Jun"],
+      "lines": {
+        "black": [120, 135, 150, 145, 170, 193]
+      }
+    },
+    {
+      "photo": "20261027_121908.jpg",
+      "title": "Monthly Coffee Sales",
+      "axis_range": [100, 200],
+      "categories": ["Jan", "Feb", "Mar", "Apr", "May", "Jun"],
+      "lines": {
+        "black": [120, 135, 150, 145, 170, 193]
+      }
+    },
+    {
+      "photo": "20261027_120202.jpg",
+      "title": "Consumption of Chicken & Fish",
+      "axis_range": [0, 25],
+      "categories": ["1990", "1995", "2000", "2005", "2010", "2015", "2020"],
+      "lines": {
+        "blue": [23, 21, 18, 14, 10, 8, 6],
+        "black": [11, 12, 14, 16, 19, 22, 24]
+      }
+    },
+    {
+      "photo": "20261027_120212.jpg",
+      "title": "Consumption of Chicken & Fish",
+      "axis_range": [0, 25],
+      "categories": ["1990", "1995", "2000", "2005", "2010", "2015", "2020"],
+      "lines": {
+        "blue": [23, 21, 18, 14, 10, 8, 6],
+        "black": [11, 12, 14, 16, 19, 22, 24]
+      }
+    }
+  ]
+}

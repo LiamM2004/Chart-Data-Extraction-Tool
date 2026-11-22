@@ -11,6 +11,7 @@ dependencies = [
     "opencv-python",
     "numpy",
     "matplotlib",  # used by the exploration notebook (chartx/preprocessing/whiteboard_clean.ipynb)
+    "pytesseract",  # reads the axis labels; needs the tesseract binary too (see the README)
 ]
 
 [tool.setuptools.packages.find]
