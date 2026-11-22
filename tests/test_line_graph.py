@@ -153,6 +153,18 @@ class NotALineChartTests(unittest.TestCase):
         cv2.circle(image, (450, 350), 250, (0, 0, 0), 4)
         self.assertEqual(detect_line_graph(image), [])
 
+    def test_a_photo_of_a_pie_chart_has_no_lines(self):
+        """A drawn circle is easy to turn down; a real photo of one is not.
+
+        IMG_1294.jpg offers up a passable pair of axes from the pie's own outline and its
+        legend, and nine unreadable labels below them, which was enough to be followed as
+        three lines and reported as a line chart with 27 valueless rows.
+        """
+        photo = cv2.imread(str(SAMPLES / "IMG_1294.jpg"))
+        if photo is None:
+            self.skipTest("sample photo not available")
+        self.assertEqual(detect_line_graph(preprocess(photo)), [])
+
 
 class SamplePhotoTests(unittest.TestCase):
     """The whole pipeline, measured against the values read off the photos by hand.

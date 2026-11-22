@@ -194,8 +194,10 @@ answer for only 8 of the 26 category labels on the sample photos, and just 2 of 
 Fitting a numeric run to readings that poor is worse than useless — the true sequence
 (1990, 1995 ... 2020) comes 2381st out of 16000 candidates — so nothing is inferred there.
 
-A chart whose y-axis labels can't be read at all still has its lines followed, but its values
-come back empty.
+A chart whose y-axis labels can't be read at all is not reported as a line chart. There would
+be no values to give for it, and in practice what reaches that point is usually not a line
+chart at all: the pie photo `IMG_1294.jpg` offers up a passable pair of axes and nine unreadable
+labels, and used to come back as a line chart with 27 empty rows.
 
 **What else was tried.** Measured against the fixtures, as mean error over the 40 hand-read
 values (the current method comes in at 1.1%):

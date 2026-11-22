@@ -67,6 +67,8 @@ def detect_line_graph(image: np.ndarray, axes: Axes | None = None) -> list[LineP
     axes = axes if axes is not None else find_axes(image)
     if axes is None or len(axes.categories) < 2:
         return []                                   # one labelled point is not a line
+    if axes.scale is None:
+        return []                                   # no readable y-axis, so nothing to read off
 
     ink = _plot_ink(image, axes)
     traces = _separate_lines(ink, axes)
