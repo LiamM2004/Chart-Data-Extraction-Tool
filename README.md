@@ -10,16 +10,17 @@ Extract data from photos of real-world charts.
 2. **Axis detection** - find the axes and plot area (`chartx/detection/axes.py`)
 3. **Tick reading** - find the axis labels and OCR them (`chartx/detection/axes.py`)
 4. **Calibration** - fit pixel -> value mapping for the y-axis (`chartx/detection/axes.py`)
-5. **Extraction** - recover series from lines/bars
+5. **Extraction** - recover series from lines/bars/pies
    - **Line charts** - `chartx/detection/line_graph.py`
    - **Bar charts** - `chartx/detection/bar_graph.py` *(reads its values off the gridlines, not
      yet off the axis labels that step 3 now provides)*
+   - **Pie charts** - `chartx/detection/pie_graph.py` *(not wired into `main.py` yet)*
 6. **Output** - CSV/JSON with confidence and warnings *(todo)*
 
 ## Setup
 
 ```
-python3 -m venv .venv && source .venv/bin/activate
+python3 -m venv .venv && source .venv/bin/activate      # Python 3.10 to 3.13
 pip install -e .
 ```
 
@@ -62,6 +63,15 @@ value and colour.
 
 If the board can't be found, the photo is used as it is, without straightening.
 
+Pie charts are not in `main.py` yet. To preprocess a photo and print the sectors of its pie chart:
+
+```
+python -m chartx.detection.pie_graph sample-images/IMG_1294.jpg
+```
+
+Pies with coloured sectors and no drawn dividers (like `IMG_1294.jpg`) are first turned into a black
+line drawing: every fill gets one label by its hue, and the borders between labels become the dividers.
+
 ## Tests
 
 ```
@@ -70,9 +80,16 @@ python -m unittest discover tests -v
 
 Run one file with `-p test_main.py`, or tests whose names match a word with `-k glare`.
 The same command runs automatically on every pull request and every push to main.
+The pie chart tests (`tests/test_pie_graph.py`) download the PaddleOCR models on the first run.
 
-The detection thresholds were tuned with OpenCV 5.0.0.93, the version the automatic tests run on;
-other versions may shift borderline photos slightly.
+The project uses OpenCV 4.10.0.84 (`opencv-contrib-python`), because PaddleOCR needs exactly this
+version. The deskew and bar chart thresholds were tuned with OpenCV 5.0.0.93 and also pass on 4.10.
+
+**The line chart tests do not yet pass on 4.10.** They were tuned on 5.0.0.93, and on 4.10 four
+of them fail: the two chicken-and-fish photos lose the blue line (1990 reads 2.5 instead of 23)
+and one of them finds an eighth category that is not there. The coffee charts are unaffected.
+Do not install `opencv-python` next to it: both packages use the same `cv2` folder.
+Other OpenCV versions may shift borderline photos slightly.
 
 Sample chart photos (varied angles and lighting) live in `sample-images/`.
 
@@ -118,7 +135,7 @@ ultra-wide is about 0.4, a 2x zoom about 1.4).
 
 ```
 chartx/
-  main.py             run everything: preprocess a photo, detect a bar chart, print its bars
+  main.py             run everything: preprocess a photo, find a bar or line chart, print it
   preprocessing/
     deskew/           straighten a photo (see its __init__.py for a map of the files)
     glare.py          glare removal and white balance
@@ -126,6 +143,7 @@ chartx/
     axes.py           find the axes, read their labels, turn pixel rows into values
     bar_graph.py      find the bars in a bar chart and read their values
     line_graph.py     follow the lines in a line chart and read their values
+    pie_graph.py      find the sectors of a pie chart and read their labels (PaddleOCR)
 tests/                python -m unittest discover tests -v
   fixtures/           values read off the sample photos by hand
   check_accuracy.py   print how close the extraction gets to them
