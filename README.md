@@ -85,9 +85,11 @@ The pie chart tests (`tests/test_pie_graph.py`) download the PaddleOCR models on
 The project uses OpenCV 4.10.0.84 (`opencv-contrib-python`), because PaddleOCR needs exactly this
 version. The deskew and bar chart thresholds were tuned with OpenCV 5.0.0.93 and also pass on 4.10.
 
-**The line chart tests do not yet pass on 4.10.** They were tuned on 5.0.0.93, and on 4.10 four
-of them fail: the two chicken-and-fish photos lose the blue line (1990 reads 2.5 instead of 23)
-and one of them finds an eighth category that is not there. The coffee charts are unaffected.
+The line chart tests pass on both. They were written against 5.0.0.93, and bringing them up on
+4.10 was worth doing: deskew finds slightly different board corners on each version, so the
+straightened photo comes out a few pixels different in size, and three of the four failures that
+exposed were real bugs that 5.0.0.93 had only been getting away with. Fixing them improved the
+readings on 5.0.0.93 as well, from 1.3% mean error to 1.1%.
 Do not install `opencv-python` next to it: both packages use the same `cv2` folder.
 Other OpenCV versions may shift borderline photos slightly.
 
@@ -103,7 +105,7 @@ python tests/check_accuracy.py          # or a photo name, e.g. 121850
 ```
 
 prints the whole comparison, which is the thing to run while changing the detection. All 40
-values currently come out within 6% of the axis range, 1.3% on average.
+values currently come out within 6% of the axis range, 1.1% on average and 2.9% at worst.
 
 ## How straightening works
 
@@ -166,7 +168,7 @@ tests/                python -m unittest discover tests -v
    "4" drawn with an open top is a "9" to Tesseract, so committing to one reading loses labels
    that a later step could have used.
    Category labels are then matched against the sequences charts normally use — the months, the
-   days of the week, quarters. Two labels reading clearly is enough to say which sequence it is
+   days of the week, quarters, or an evenly spaced run of numbers. Two labels reading clearly is enough to say which sequence it is
    and where it starts, and the rest are named from their place in it. That is what turns
    "Sen, Feb, Mar, Apr, flosy, So" into "Jan ... Jun".
 4. **Fit the y-axis.** Axis labels climb evenly, so the right scale is the one that puts the most
@@ -196,7 +198,7 @@ A chart whose y-axis labels can't be read at all still has its lines followed, b
 come back empty.
 
 **What else was tried.** Measured against the fixtures, as mean error over the 40 hand-read
-values (the current method comes in at 1.3%):
+values (the current method comes in at 1.1%):
 
 | way of following the lines | mean error | notes |
 | --- | --- | --- |
@@ -204,7 +206,7 @@ values (the current method comes in at 1.3%):
 | nearest run, ignoring which way the line was heading | 9.8% | loses both lines at a crossing |
 | least-bending whole path (dynamic programming) | 16.8% | see below |
 | the same, with a limit on how far one step may jump | 7.1% | drops a line at the crossing |
-| nearest run to where the line was heading (current) | 1.3% | |
+| nearest run to where the line was heading (current) | 1.1% | |
 
 Dynamic programming is the obvious way to pick a whole path at once, and it is in the plan this
 work started from, but it does not suit a chart with more than one line. With the state as the
@@ -215,5 +217,10 @@ another. Following each line forwards from where it has last been seen avoids bo
 
 Straightening each label on its own slant before reading it was also tried, since the categories
 are written on a slant and the y-axis numbers are not. It gains one label out of 26 and costs
-twice the OCR, so it is not in. Reading the categories as an evenly spaced run of numbers gains
-nothing at all: too few of the years are ever read clearly enough to say where the run starts.
+twice the OCR, so it is not in.
+
+Categories that are an evenly spaced run of numbers (1, 2, 3, 4) *are* read, the same way the
+months are: each pair of readings that parse as numbers proposes a first value and a step, and
+the best-fitting run names the labels Tesseract got wrong. It does nothing for the years on the
+chicken-and-fish photos, because too few of them are ever read clearly enough to say where the
+run starts, but it recovers a digit misread in an otherwise clean run.

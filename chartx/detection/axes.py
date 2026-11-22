@@ -112,7 +112,7 @@ def find_axes(image: np.ndarray) -> Axes | None:
 
     category_boxes = _label_boxes(ink, _x_label_strip(x_axis, origin, image.shape), axis_length)
     texts = [_read_text(gray, box) for box in category_boxes]
-    texts = _named_in_sequence(texts) or texts
+    texts = _named_in_sequence(texts) or _numbered_in_steps(texts) or texts
     categories = [Category(text, int(box[0] + box[2] / 2))
                   for text, box in zip(texts, category_boxes)]
 
@@ -255,6 +255,7 @@ def _label_boxes(ink: np.ndarray, strip: tuple[int, int, int, int], axis_length:
     along = 1 if height > width else 0          # labels run down a column, or across a row
     boxes = _words(patch, reach=max(3, int(0.45 * np.median(letter_heights))))
     boxes = _split_double_labels(_joined_into_labels(boxes, along), along)
+    boxes = _without_scraps(boxes, along)
     if len(boxes) == 0:
         return np.empty((0, 4), int)
 
@@ -336,6 +337,21 @@ def _split_double_labels(labels: np.ndarray, along: int, min_ratio: float = 1.7)
             piece[along] = label[along] + part * piece[along + 2]
             split.append(piece)
     return np.array(split, int)
+
+
+def _without_scraps(labels: np.ndarray, along: int, least_of_usual: float = 0.25) -> np.ndarray:
+    """Drop any box far too small along the axis to be one of its labels.
+
+    Labels on an axis are about as big as each other, which is the same thing
+    _split_double_labels() leans on to cut a box that came out a whole multiple too big. A
+    speck of glare that survived as its own box is the other side of that: it sits among
+    labels many times its size, and would otherwise be read as a label of its own and throw
+    the count of them out.
+    """
+    if len(labels) < 3:
+        return labels
+    usual = np.median(labels[:, along + 2])
+    return labels[labels[:, along + 2] >= least_of_usual * usual]
 
 
 def _bounding_box(boxes: np.ndarray) -> tuple[int, int, int, int]:
@@ -436,6 +452,35 @@ def _named_in_sequence(texts: list[str]) -> list[str] | None:
     return best
 
 
+def _numbered_in_steps(texts: list[str]) -> list[str] | None:
+    """The run of evenly spaced numbers these readings look most like, or None if they are not one.
+
+    The same idea as _named_in_sequence() for the axes that count rather than name: 1, 2, 3, 4
+    or 1990, 1995, 2000. Each pair of readings that parse as numbers proposes a first value and
+    a step, and the run those two imply is scored against every reading, so a label Tesseract
+    got wrong is named from its place in the run like a misread month is.
+    """
+    read = [(place, float(word)) for place, word in enumerate(texts) if word.isdigit()]
+    if len(read) < ENOUGH_TO_GO_ON:
+        return None
+
+    best, best_score = None, 0.0
+    for (place, value), (later_place, later_value) in combinations(read, 2):
+        step = (later_value - value) / (later_place - place)
+        if step <= 0 or step != int(step):
+            continue                                     # axes count up, in whole numbers
+        start = value - place * step
+        if start < 0:
+            continue
+        run = [str(int(start + place * step)) for place in range(len(texts))]
+        alike = [_how_alike(word, number) for word, number in zip(texts, run)]
+        if sum(score >= CLEARLY_THE_SAME for score in alike) < ENOUGH_TO_GO_ON:
+            continue                                     # too few read clearly to go on
+        if sum(alike) > best_score:
+            best, best_score = run, sum(alike)
+    return best
+
+
 def _how_alike(read: str, word: str) -> float:
     """How much a reading looks like a word, from 0 (nothing alike) to 1 (the same)."""
     return SequenceMatcher(None, read.lower(), word.lower()).ratio()
@@ -456,7 +501,7 @@ def _fit_value_scale(readings: list[list[float]], rows: np.ndarray, row_gap: flo
     if len(pairs) < 2 or tolerance <= 0:
         return None
 
-    best, best_score = None, (1, 0.0)
+    best, best_score = None, (1.0, 0.0)      # under one whole label's worth is not a fit
     for (row_a, value_a), (row_b, value_b) in combinations(pairs, 2):
         if row_a == row_b or value_a == value_b:
             continue
@@ -466,15 +511,38 @@ def _fit_value_scale(readings: list[list[float]], rows: np.ndarray, row_gap: flo
         at_row_zero = value_a - per_row * row_a
         scale = ValueScale(per_row, at_row_zero)
 
-        agreed = [min(abs(scale.row(value) - row) for value in values) for row, values in zip(rows, readings) if values]
-        close = [error for error in agreed if error <= tolerance]
-        score = (len(close), -sum(close) / len(close) if close else 0.0)
+        score = _how_well_it_fits(scale, readings, rows, tolerance)
         if score > best_score:
             best, best_score = scale, score
 
     if best is None:
         return None
     return _refit_on_agreeing_labels(best, readings, rows, tolerance)
+
+
+def _how_well_it_fits(scale: ValueScale, readings, rows, tolerance) -> tuple[float, float]:
+    """How well a scale explains the labels: (what the labels it agrees with are worth,
+    minus how far out they are).
+
+    A label counts for how strongly its reading was voted for, so one matched through
+    Tesseract's first choice counts a whole label and one matched through its third counts a
+    third. Plain counting lets a run of truncated readings win: where "25, 20, 15, 10" come
+    back as "3, 2, 1, 0" those four sit exactly on a line of their own and outnumber the two
+    or three labels that were read properly, and the axis then reads a tenth of its real size.
+    Weighting by the vote puts the properly read labels back in front.
+    """
+    matched = []
+    for row, values in zip(rows, readings):
+        if not values:
+            continue
+        rank, error = min(((place, abs(scale.row(value) - row))
+                           for place, value in enumerate(values)), key=lambda pair: pair[1])
+        if error <= tolerance:
+            matched.append((rank, error))
+    if not matched:
+        return 0.0, 0.0
+    worth = sum(1.0 / (1 + rank) for rank, _ in matched)
+    return worth, -sum(error for _, error in matched) / len(matched)
 
 
 def _refit_on_agreeing_labels(scale: ValueScale, readings, rows, tolerance) -> ValueScale:

@@ -28,6 +28,13 @@ HEADING_RUN_UP = 0.06
 # stray title or legend inside the plot area, say.
 LONGEST_BREAK = 0.08
 
+# A line may stray further the longer the blank stretch it is crossing, but only by this many
+# columns' worth. Without a cap the allowance grows until it covers the whole plot, and a line
+# that has already ended carries on to whatever is drawn next: on the chicken-and-fish photos
+# that is the title, which sits inside the plot area well above the data. Anything from about
+# 5 to 12 reads the sample photos equally well.
+WANDER_GROWS_FOR = 8
+
 # How much colour a line needs before it is called anything but black (0-255).
 FAINTEST_COLOUR = 25
 
@@ -200,7 +207,8 @@ def _nearest_run(centres: list[float], seen: list[tuple[int, float]],
     last_column, last_row = seen[-1]
     expected = last_row + _heading(seen) * (column - last_column)
     centre = min(centres, key=lambda candidate: abs(candidate - expected))
-    if abs(centre - expected) > wander * max(1.0, abs(column - last_column)):
+    gap = min(max(1.0, abs(column - last_column)), WANDER_GROWS_FOR)
+    if abs(centre - expected) > wander * gap:
         return None                                 # that ink belongs to something else
     return centre
 
