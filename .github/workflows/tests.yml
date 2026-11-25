@@ -24,7 +24,7 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
 
-      - name: Install the system library OpenCV needs, and Tesseract for the axis labels
+      - name: Install the system library OpenCV needs
         run: sudo apt-get update && sudo apt-get install -y libgl1
 
       - name: Install the project

@@ -13,9 +13,9 @@
     "which. 'photo' names a file in sample-images/.",
     "",
     "'tolerance' is a fraction of the y-axis range (max - min). The extraction currently comes",
-    "in at 1.1% on average and 2.9% at worst, so 6% leaves room for different builds of",
-    "Tesseract reading the axis labels slightly differently, without letting a real regression",
-    "through. Run tests/check_accuracy.py to see where it actually stands."
+    "in at 1.1% on average and 2.3% at worst, so 6% leaves room for the OCR reading the axis",
+    "labels slightly differently between builds, without letting a real regression through.",
+    "Run tests/check_accuracy.py to see where it actually stands."
   ],
 
   "tolerance": 0.06,
