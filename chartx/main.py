@@ -1,25 +1,31 @@
-"""Command line: straighten a photo of a chart and clean up its glare.
+"""Read the data from a photo of a chart.
 
-    python -m chartx photo.jpg -o out/photo.png              # opens the drag window if unsure
-    python -m chartx photo.jpg -o out/photo.png --manual     # always open the drag window
-    python -m chartx photo.jpg -o out/photo.png --no-prompt  # never open a window (batch use)
-    python -m chartx photo.jpg -o out/photo.png --corners 10,20 900,15 920,700 5,690
-    python -m chartx photo.jpg -o out/photo.png --focal 0.5  # lens focal length / photo's long side
-    python -m chartx photo.jpg -o out/photo.png --no-glare   # stop after straightening
-    python -m chartx photo.jpg -o out/photo.png --debug out/debug.png
+    python -m chartx bar photo.jpg    # a bar chart
+    python -m chartx pie photo.jpg    # a pie chart
+
+The photo is straightened and its glare cleaned up, then the chosen detector reads the chart.
+The data is printed as a table and the cleaned photo is shown (with the bars boxed for bar charts).
 """
 
 import sys
 
 import cv2
 import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
 
-from chartx.detection import bar_graph
+from chartx.detection import bar_graph, pie_graph
 from chartx.preprocessing import glare
 from chartx.preprocessing.deskew import deskew
 
 
 from dataclasses import fields
+
+
+# The chart types the user can choose from, and the detector that reads each one
+DETECTORS = {
+    "bar": lambda image: bar_graph.detect_bar_graph(image),
+    "pie": lambda image: pie_graph.detect_pie_graph(image),
+}
 
 
 # Display data for a graph or chart
@@ -42,6 +48,15 @@ def print_table(rows):
         print(line(row))
 
 
+def draw_bar_boxes(ax, bars):
+    """Outline each detected bar on the plot and label it with its index from the table."""
+    for bar in bars:
+        ax.add_patch(Rectangle((bar.x, bar.y), bar.width, bar.height,
+                               fill=False, edgecolor="lime", linewidth=2))
+        ax.text(bar.x + bar.width / 2, bar.y - 5, str(bar.index), color="lime",
+                fontsize=12, fontweight="bold", ha="center", va="bottom")
+
+
 def preprocess(photo):
     """Straighten a BGR photo of a chart, clean the glare off it, and return the result."""
     straightened = deskew(photo).image
@@ -49,11 +64,11 @@ def preprocess(photo):
 
 
 def main():
-    # Get the image path from the command line
-    if len(sys.argv) < 2:
-        print("Usage: python -m chartx.main image.jpg")
+    # Get the chart type and image path from the command line
+    if len(sys.argv) < 3 or sys.argv[1] not in DETECTORS:
+        print(f"Usage: python -m chartx {{{'|'.join(DETECTORS)}}} image.jpg")
         exit(1)
-    path = sys.argv[1]
+    chart_type, path = sys.argv[1], sys.argv[2]
 
     # Read in an image
     image = cv2.imread(path)
@@ -64,16 +79,19 @@ def main():
     # Straighten the image, then clean up its glare
     result = preprocess(image)
 
-    # Check if this is a bar chart and get its data object list
-    bar_graph_data = bar_graph.detect_bar_graph(result)
+    # Find the chosen type of chart and get its data object list
+    chart_data = DETECTORS[chart_type](result)
 
-    if bar_graph_data == None:
-        print("No bar graph found")
+    if not chart_data:
+        print(f"No {chart_type} chart found")
 
-    # Display the bar chart data
-    print_table(bar_graph_data)
+    # Display the chart data
+    print_table(chart_data)
 
+    # Show the cleaned photo, with a box around each detected bar for bar charts
     plt.imshow(cv2.cvtColor(result, cv2.COLOR_BGR2RGB))
+    if chart_type == "bar":
+        draw_bar_boxes(plt.gca(), chart_data)
     plt.axis('off')
     plt.show()
 

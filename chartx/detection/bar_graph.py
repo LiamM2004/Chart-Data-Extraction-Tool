@@ -18,6 +18,7 @@ class Bar:
     relative_height: float          # height / tallest bar
     value: Optional[float]          # read from the y-axis labels (None if unreadable)
     colour: str                     # "#rrggbb"
+    label: Optional[str] = None     # the text written under the bar (None if there is none)
 
 
 # Is a number odd?
@@ -180,12 +181,58 @@ def _bar_colour(image, box):
     return f"#{r:02x}{g:02x}{b:02x}"
 
 
+# Match the text found under the bars to the bar above it
+def _assign_labels(results, boxes):
+    """Give each bar the text whose centre lies within the bar's width (widened by a quarter
+    on each side, as a label can be a little off centre). Text that sits under no bar, such
+    as an axis number, is dropped. Several words under one bar are joined left to right.
+
+    results: (4 corner points, text, confidence) for each piece of text, as read by OCR,
+        in the same pixel coordinates as `boxes`.
+    """
+    words = [[] for _ in boxes]
+    for poly, text, _ in results:
+        centre_x = float(np.mean([point[0] for point in poly]))
+        for i, (x, _, w, _) in enumerate(boxes):
+            if x - w / 4 <= centre_x <= x + w + w / 4:
+                words[i].append((centre_x, text.strip()))
+                break
+    return [" ".join(text for _, text in sorted(found)) or None for found in words]
+
+
+# Read the labels written under the bars
+def _bar_labels(image, boxes):
+    """OCR the strip just below the baseline and match each piece of text to its bar.
+
+    Returns one label (or None) per bar. If PaddleOCR is not installed a warning is
+    given and every label is None.
+    """
+    try:
+        from chartx.detection.pie_graph import _paddle, _read_text   # loads PaddleOCR (slow)
+        ocr = _paddle()
+    except ImportError:
+        warnings.warn("PaddleOCR is not installed, so the bar labels can't be read")
+        return [None] * len(boxes)
+
+    baseline = int(np.median(boxes[:, 1] + boxes[:, 3]))
+    strip_height = max(40, int(0.2 * boxes[:, 3].max()))
+    top = baseline + 2                                   # just below the axis line
+    strip = image[top: min(image.shape[0], baseline + strip_height)]
+    if strip.shape[0] < 5:                               # the bars reach the bottom of the photo
+        return [None] * len(boxes)
+
+    return _assign_labels(_read_text(ocr, strip), boxes)
+
+
 # Detect and extract a bar graph from an image and return an object
 def detect_bar_graph(image, calibration=None, horizontal=False):
     """Detect a bar graph in a preprocessed BGR image.
 
     Returns a list of `Bar` objects, left to right (an empty list if no bar graph
     is found).
+
+    Each bar's label is read with OCR from the text written under it (vertical bars
+    only; for horizontal bars `Bar.label` is None).
 
     Bar values are read from the horizontal gridlines, assuming they go evenly
     from 0 at the baseline to 10 at the top one. If no gridlines are found a
@@ -215,6 +262,8 @@ def detect_bar_graph(image, calibration=None, horizontal=False):
     else:
         values = _bar_values(image, boxes)
 
+    labels = [None] * len(boxes) if horizontal else _bar_labels(image, boxes)
+
     return [Bar(i + 1, int(x[i]), int(y[i]), int(w[i]), int(h[i]),
-                round(float(relative[i]), 3), values[i], _bar_colour(image, boxes[i]))
+                round(float(relative[i]), 3), values[i], _bar_colour(image, boxes[i]), labels[i])
             for i in range(len(boxes))]

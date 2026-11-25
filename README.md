@@ -22,25 +22,24 @@ pip install -e .
 
 ## Running
 
-From the project root, with the virtual environment active:
+From the project root, with the virtual environment active, give the type of chart and then the photo:
 
 ```
-python -m chartx.main
+python -m chartx bar sample-images/barchart_test.jpg
+python -m chartx pie sample-images/IMG_1294.jpg
 ```
 
-This reads the photo named by `path` near the top of `chartx/main.py` (change it to try another
-photo), straightens it, cleans up its glare, then looks for a bar chart. Each bar found is printed
-as a table row (position, size, height relative to the tallest bar, value and colour), and the
-cleaned photo opens in a matplotlib window. Bar values are measured against the top gridline,
-taken as 10 on an axis that starts at 0.
+The photo is straightened and its glare cleaned up, then the chosen detector reads the chart:
+
+- **bar** (`chartx/detection/bar_graph.py`): each bar is printed as a table row (position, size,
+  height relative to the tallest bar, value, colour and the label written under it), and the cleaned photo opens in a
+  matplotlib window with a numbered box around each bar. Bar values are measured against the
+  top gridline, taken as 10 on an axis that starts at 0.
+- **pie** (`chartx/detection/pie_graph.py`): each sector is printed as a table row (angles,
+  percentage, the percentage written on it and its label), and the cleaned photo opens in a
+  matplotlib window. Reading the writing needs PaddleOCR (`pip install paddleocr`).
 
 If the board can't be found, the photo is used as it is, without straightening.
-
-Pie charts are not in `main.py` yet. To preprocess a photo and print the sectors of its pie chart:
-
-```
-python -m chartx.detection.pie_graph sample-images/IMG_1294.jpg
-```
 
 Pies with coloured sectors and no drawn dividers (like `IMG_1294.jpg`) are first turned into a black
 line drawing: every fill gets one label by its hue, and the borders between labels become the dividers.

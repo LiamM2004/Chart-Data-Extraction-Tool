@@ -17,6 +17,7 @@ import numpy as np
 
 from chartx import main as chartx_main
 from chartx.detection.bar_graph import Bar
+from chartx.detection.pie_graph import Sector
 
 SAMPLE_BAR_CHART = str(Path(__file__).resolve().parent.parent / "sample-images" / "barchart_test.jpg")
 
@@ -71,6 +72,22 @@ class PrintTableTests(unittest.TestCase):
         self.assertIn("#ff0000", shown.splitlines()[2])
 
 
+class DrawBarBoxesTests(unittest.TestCase):
+    def test_draws_one_box_and_one_label_per_bar_where_the_bar_is(self):
+        bars = [Bar(1, 10, 20, 30, 40, 1.0, 7.5, "#ff0000"), Bar(2, 50, 30, 30, 30, 0.75, None, "#00ff00")]
+        ax = mock.Mock()
+        chartx_main.draw_bar_boxes(ax, bars)
+        boxes = [call.args[0] for call in ax.add_patch.call_args_list]
+        self.assertEqual([(b.get_x(), b.get_y(), b.get_width(), b.get_height()) for b in boxes],
+                         [(10, 20, 30, 40), (50, 30, 30, 30)])
+        self.assertEqual([call.args[2] for call in ax.text.call_args_list], ["1", "2"])
+
+    def test_no_bars_draws_nothing(self):
+        ax = mock.Mock()
+        chartx_main.draw_bar_boxes(ax, [])
+        ax.add_patch.assert_not_called()
+
+
 class PreprocessTests(unittest.TestCase):
     def test_straightens_first_then_cleans_the_glare_off_the_straightened_image(self):
         photo = np.zeros((10, 10, 3), np.uint8)
@@ -99,32 +116,64 @@ class MainTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
 
     def test_no_photo_given_prints_the_usage(self):
-        with mock.patch("sys.argv", ["chartx.main"]):
+        with mock.patch("sys.argv", ["chartx"]):
             code, shown = printed(chartx_main.main)
         self.assertEqual(code, 1)
         self.assertIn("Usage", shown)
 
+    def test_no_photo_after_the_chart_type_prints_the_usage(self):
+        with mock.patch("sys.argv", ["chartx", "bar"]):
+            code, shown = printed(chartx_main.main)
+        self.assertEqual(code, 1)
+        self.assertIn("Usage", shown)
+
+    def test_an_unknown_chart_type_prints_the_usage_listing_the_types(self):
+        with mock.patch("sys.argv", ["chartx", "scatter", SAMPLE_BAR_CHART]):
+            code, shown = printed(chartx_main.main)
+        self.assertEqual(code, 1)
+        self.assertIn("bar|pie", shown)
+
     def test_a_photo_that_cannot_be_read_is_reported(self):
-        with mock.patch("sys.argv", ["chartx.main", "no/such/photo.jpg"]):
+        with mock.patch("sys.argv", ["chartx", "bar", "no/such/photo.jpg"]):
             code, shown = printed(chartx_main.main)
         self.assertEqual(code, 1)
         self.assertIn("no/such/photo.jpg", shown)
 
-    def test_finds_the_bars_in_the_sample_bar_chart_and_shows_the_result(self):
-        with mock.patch("sys.argv", ["chartx.main", SAMPLE_BAR_CHART]), \
-                mock.patch.object(chartx_main.plt, "imshow") as imshow:
+    def test_finds_the_bars_in_the_sample_bar_chart_and_boxes_them(self):
+        with mock.patch("sys.argv", ["chartx", "bar", SAMPLE_BAR_CHART]), \
+                mock.patch.object(chartx_main.plt, "imshow") as imshow, \
+                mock.patch.object(chartx_main, "draw_bar_boxes") as draw:
             code, shown = printed(chartx_main.main)
         self.assertIsNone(code)
         table = shown[shown.index("index"):].splitlines()
         self.assertEqual(len(table) - 2, 5, f"expected 5 bars in:\n{shown}")
+        self.assertEqual(table[0].split()[-1], "label")
+        self.assertEqual([row.split()[-1] for row in table[2:]], ["Red", "Blue", "Green", "Yellow", "Pink"])
         imshow.assert_called_once()
+        self.assertEqual(len(draw.call_args.args[1]), 5)
 
-    def test_a_photo_with_no_bars_prints_an_empty_table(self):
-        with mock.patch("sys.argv", ["chartx.main", SAMPLE_BAR_CHART]), \
+    def test_pie_uses_the_pie_detector_and_draws_no_bar_boxes(self):
+        sector = Sector(1, 0.0, 90.0, 25.0, None, "Red")
+        with mock.patch("sys.argv", ["chartx", "pie", SAMPLE_BAR_CHART]), \
+                mock.patch.object(chartx_main.pie_graph, "detect_pie_graph", return_value=[sector]) as pie, \
+                mock.patch.object(chartx_main.bar_graph, "detect_bar_graph") as bar, \
+                mock.patch.object(chartx_main.plt, "imshow"), \
+                mock.patch.object(chartx_main, "draw_bar_boxes") as draw:
+            code, shown = printed(chartx_main.main)
+        self.assertIsNone(code)
+        pie.assert_called_once()
+        bar.assert_not_called()
+        draw.assert_not_called()
+        self.assertIn("start_angle", shown)
+        self.assertIn("Red", shown)
+
+    def test_a_photo_with_no_chart_says_so_and_prints_an_empty_table(self):
+        with mock.patch("sys.argv", ["chartx", "bar", SAMPLE_BAR_CHART]), \
                 mock.patch.object(chartx_main.bar_graph, "detect_bar_graph", return_value=[]), \
                 mock.patch.object(chartx_main.plt, "imshow"):
             code, shown = printed(chartx_main.main)
         self.assertIsNone(code)
+        self.assertIn("No bar chart found", shown)
         self.assertIn("(no rows)", shown)
 
 
