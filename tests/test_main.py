@@ -167,14 +167,86 @@ class MainTests(unittest.TestCase):
         self.assertIn("start_angle", shown)
         self.assertIn("Red", shown)
 
-    def test_a_photo_with_no_chart_says_so_and_prints_an_empty_table(self):
+    def test_a_chosen_chart_that_is_not_found_says_so_and_still_shows_the_photo(self):
         with mock.patch("sys.argv", ["chartx", "bar", SAMPLE_BAR_CHART]), \
                 mock.patch.object(chartx_main.bar_graph, "detect_bar_graph", return_value=[]), \
-                mock.patch.object(chartx_main.plt, "imshow"):
+                mock.patch.object(chartx_main.plt, "imshow") as imshow:
             code, shown = printed(chartx_main.main)
         self.assertIsNone(code)
         self.assertIn("No bar chart found", shown)
-        self.assertIn("(no rows)", shown)
+        self.assertNotIn("index", shown)              # no empty table
+        imshow.assert_called_once()
+
+
+class AutoModeTests(unittest.TestCase):
+    """python -m chartx photo.jpg: the chart type is worked out from the photo."""
+
+    def setUp(self):
+        for name in ("show", "imshow"):
+            patcher = mock.patch.object(chartx_main.plt, name)
+            setattr(self, name, patcher.start())
+            self.addCleanup(patcher.stop)
+
+    def run_auto(self, found, arguments=None):
+        """Run main with detect_chart answering `found`; returns (exit code, printed text, detect_chart mock)."""
+        with mock.patch("sys.argv", ["chartx", *(arguments or [SAMPLE_BAR_CHART])]), \
+                mock.patch.object(chartx_main, "detect_chart", return_value=found) as detect, \
+                mock.patch.object(chartx_main, "draw_bar_boxes") as self.draw:
+            code, shown = printed(chartx_main.main)
+        return code, shown, detect
+
+    def test_no_chart_type_means_auto(self):
+        _, _, detect = self.run_auto([])
+        detect.assert_called_once()
+
+    def test_auto_can_also_be_asked_for_by_name(self):
+        _, _, detect = self.run_auto([], ["auto", SAMPLE_BAR_CHART])
+        detect.assert_called_once()
+
+    def test_says_which_chart_it_found_and_prints_its_table(self):
+        bar = Bar(1, 10, 20, 30, 40, 1.0, 7.5, "#ff0000", "Red")
+        code, shown, _ = self.run_auto([("bar", [bar])])
+        self.assertIsNone(code)
+        self.assertIn("Found a bar chart", shown)
+        self.assertIn("Red", shown)
+        self.assertEqual(self.draw.call_args.args[1], [bar])
+
+    def test_a_pie_draws_no_bar_boxes(self):
+        sector = Sector(1, 0.0, 90.0, 25.0, None, "Red")
+        _, shown, _ = self.run_auto([("pie", [sector])])
+        self.assertIn("Found a pie chart", shown)
+        self.draw.assert_not_called()
+
+    def test_a_second_chart_on_the_board_is_mentioned_with_how_to_read_it(self):
+        sector = Sector(1, 0.0, 90.0, 25.0, None, "Red")
+        bar = Bar(1, 10, 20, 30, 40, 1.0, 7.5, "#ff0000", "Blue")
+        _, shown, _ = self.run_auto([("pie", [sector]), ("bar", [bar])])
+        self.assertIn("Found a pie chart", shown)
+        self.assertIn(f"python -m chartx bar {SAMPLE_BAR_CHART}", shown)
+        self.assertNotIn("Blue", shown)               # only the first chart's table is printed
+
+    def test_no_chart_found_prints_a_message_and_still_shows_the_photo(self):
+        code, shown, _ = self.run_auto([])
+        self.assertIsNone(code)
+        self.assertIn("No chart found", shown)
+        self.assertIn("bar, pie", shown)              # says which charts are supported
+        self.assertNotIn("index", shown)              # no empty table
+        self.imshow.assert_called_once()
+        self.show.assert_called_once()
+        self.draw.assert_not_called()
+
+
+class ParseArgumentsTests(unittest.TestCase):
+    def test_just_a_photo_means_auto(self):
+        self.assertEqual(chartx_main.parse_arguments(["photo.jpg"]), ("auto", "photo.jpg"))
+
+    def test_a_chart_type_then_a_photo(self):
+        for chart_type in ("auto", "bar", "pie"):
+            self.assertEqual(chartx_main.parse_arguments([chart_type, "photo.jpg"]), (chart_type, "photo.jpg"))
+
+    def test_anything_else_is_refused(self):
+        for arguments in ([], ["bar"], ["scatter", "photo.jpg"], ["photo.jpg", "bar"], ["bar", "a.jpg", "b.jpg"]):
+            self.assertIsNone(chartx_main.parse_arguments(arguments), arguments)
 
 
 if __name__ == "__main__":

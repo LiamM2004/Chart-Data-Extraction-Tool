@@ -22,14 +22,24 @@ pip install -e .
 
 ## Running
 
-From the project root, with the virtual environment active, give the type of chart and then the photo:
+From the project root, with the virtual environment active, give the photo, and optionally the
+type of chart first:
 
 ```
-python -m chartx bar sample-images/barchart_test.jpg
-python -m chartx pie sample-images/IMG_1294.jpg
+python -m chartx sample-images/barchart_test.jpg        # work out which kind of chart it is
+python -m chartx bar sample-images/barchart_test.jpg    # it's a bar chart
+python -m chartx pie sample-images/IMG_1294.jpg         # it's a pie chart
 ```
 
-The photo is straightened and its glare cleaned up, then the chosen detector reads the chart:
+The photo is straightened and its glare cleaned up, then the chart is read.
+
+Without a chart type (or with `auto`), both detectors run and their answers are checked against
+each other (`chartx/detection/auto.py`). On a bar chart the pie detector can mistake the bars for
+a pie, so a pie with bars inside its circle is dropped. If a board has both a bar chart and a pie
+chart, the bigger one is read and the command to read the other is printed. If no chart is found,
+a message says so and the cleaned photo is still shown. Line charts aren't supported yet.
+
+What each chart type prints:
 
 - **bar** (`chartx/detection/bar_graph.py`): each bar is printed as a table row (position, size,
   height relative to the tallest bar, value, colour and the label written under it), and the cleaned photo opens in a
@@ -91,11 +101,12 @@ ultra-wide is about 0.4, a 2x zoom about 1.4).
 
 ```
 chartx/
-  main.py             run everything: preprocess a photo, detect a bar chart, print its bars
+  main.py             run everything: preprocess a photo, find its chart, print its data
   preprocessing/
     deskew/           straighten a photo (see its __init__.py for a map of the files)
     glare.py          glare removal and white balance
   detection/
+    auto.py           work out which kind of chart is in a photo
     bar_graph.py      find the bars in a bar chart and read their values
     pie_graph.py      find the sectors of a pie chart and read their labels (PaddleOCR)
 tests/                python -m unittest discover tests -v

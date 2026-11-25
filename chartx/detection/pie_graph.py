@@ -400,6 +400,15 @@ def detect_pie_graph(image):
     written percentage, but only if every sector has exactly one and they add up to 100;
     otherwise it is None for all sectors.
     """
+    return find_pie(image)[0]
+
+
+# Detect a pie graph and also say where it is
+def find_pie(image):
+    """Like `detect_pie_graph`, but returns (sectors, (centre x, centre y, radius)), with the
+    circle in the input image's pixels, so callers can tell where the pie is.
+    Returns ([], None) if no pie is found.
+    """
     scale = WORK_SIZE / max(image.shape[:2])
     image = cv2.resize(image, None, fx=scale, fy=scale,
                        interpolation=cv2.INTER_AREA if scale < 1 else cv2.INTER_CUBIC)
@@ -412,7 +421,7 @@ def detect_pie_graph(image):
     clean = _remove_text(gray, results)   # 255 = ink
     circle = _find_centre(255 - clean, clean)
     if circle is None or circle[1] is None:
-        return []
+        return [], None
     (_, _, r), centre = circle
 
     # 4.-7. unroll, histogram, peaks -> dividers -> sectors
@@ -420,16 +429,17 @@ def detect_pie_graph(image):
     share = polar[int(BAND_IN * r):int(BAND_OUT * r)].mean(axis=0) / 255
     angles = _peaks(share)
     if not angles:
-        return []
+        return [], None
     found = _sectors(angles)
 
     # 8.-10. one text per sector (same OCR boxes), percentages from it
     texts = _text_per_sector(results, centre, r, found)
     values, ok = _ocr_values(texts)
 
-    return [Sector(k + 1, round(float(start), 1), round(float(end), 1), round(float(value), 1),
-                   values[k][0] if ok else None, texts[k] or None)
-            for k, (start, end, value) in enumerate(found)]
+    sectors = [Sector(k + 1, round(float(start), 1), round(float(end), 1), round(float(value), 1),
+                      values[k][0] if ok else None, texts[k] or None)
+               for k, (start, end, value) in enumerate(found)]
+    return sectors, (float(centre[0]) / scale, float(centre[1]) / scale, float(r) / scale)
 
 
 # Preprocess a photo and print the sectors of its pie graph

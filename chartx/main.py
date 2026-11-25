@@ -1,10 +1,12 @@
 """Read the data from a photo of a chart.
 
+    python -m chartx photo.jpg        # work out which kind of chart it is
     python -m chartx bar photo.jpg    # a bar chart
     python -m chartx pie photo.jpg    # a pie chart
 
-The photo is straightened and its glare cleaned up, then the chosen detector reads the chart.
-The data is printed as a table and the cleaned photo is shown (with the bars boxed for bar charts).
+The photo is straightened and its glare cleaned up, then the chart is read. The data is printed
+as a table and the cleaned photo is shown (with the bars boxed for bar charts). If no chart is
+found, a message says so and the photo is still shown, so you can see what was looked at.
 """
 
 import sys
@@ -14,6 +16,7 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 
 from chartx.detection import bar_graph, pie_graph
+from chartx.detection.auto import detect_chart
 from chartx.preprocessing import glare
 from chartx.preprocessing.deskew import deskew
 
@@ -63,12 +66,34 @@ def preprocess(photo):
     return glare.clean_whiteboard(straightened)
 
 
+# Read the chart type (optional) and image path from the command line
+def parse_arguments(arguments):
+    """Returns (chart type, image path), or None if the arguments don't make sense.
+    The chart type is "auto" when none is given."""
+    choices = ["auto", *DETECTORS]
+    if len(arguments) == 1 and arguments[0] not in choices:
+        return "auto", arguments[0]
+    if len(arguments) == 2 and arguments[0] in choices:
+        return arguments[0], arguments[1]
+    return None
+
+
+# Find the chart: the chosen kind, or whichever kind is in the photo
+def find_charts(chart_type, image):
+    """Returns [(chart type, data), ...], the chart to show first; [] if no chart is found."""
+    if chart_type == "auto":
+        return detect_chart(image)
+    data = DETECTORS[chart_type](image)
+    return [(chart_type, data)] if data else []
+
+
 def main():
     # Get the chart type and image path from the command line
-    if len(sys.argv) < 3 or sys.argv[1] not in DETECTORS:
-        print(f"Usage: python -m chartx {{{'|'.join(DETECTORS)}}} image.jpg")
+    arguments = parse_arguments(sys.argv[1:])
+    if arguments is None:
+        print(f"Usage: python -m chartx [auto|{'|'.join(DETECTORS)}] image.jpg")
         exit(1)
-    chart_type, path = sys.argv[1], sys.argv[2]
+    chart_type, path = arguments
 
     # Read in an image
     image = cv2.imread(path)
@@ -79,19 +104,27 @@ def main():
     # Straighten the image, then clean up its glare
     result = preprocess(image)
 
-    # Find the chosen type of chart and get its data object list
-    chart_data = DETECTORS[chart_type](result)
+    # Find the chart and get its data object list
+    found = find_charts(chart_type, result)
 
-    if not chart_data:
-        print(f"No {chart_type} chart found")
-
-    # Display the chart data
-    print_table(chart_data)
+    if not found:
+        kind = "chart" if chart_type == "auto" else f"{chart_type} chart"
+        print(f"No {kind} found in {path}.")
+        print(f"The supported charts are: {', '.join(DETECTORS)}. "
+              "The cleaned photo is shown so you can check what was looked at.")
+        found_type, data = None, []
+    else:
+        found_type, data = found[0]
+        if chart_type == "auto":
+            print(f"Found a {found_type} chart")
+        print_table(data)
+        for other_type, _ in found[1:]:
+            print(f"A {other_type} chart was also found. To read it: python -m chartx {other_type} {path}")
 
     # Show the cleaned photo, with a box around each detected bar for bar charts
     plt.imshow(cv2.cvtColor(result, cv2.COLOR_BGR2RGB))
-    if chart_type == "bar":
-        draw_bar_boxes(plt.gca(), chart_data)
+    if found_type == "bar":
+        draw_bar_boxes(plt.gca(), data)
     plt.axis('off')
     plt.show()
 
