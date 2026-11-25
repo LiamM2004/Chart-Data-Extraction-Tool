@@ -411,6 +411,8 @@ def _bounding_box(boxes: np.ndarray) -> tuple[int, int, int, int]:
 # 0.35 reads the sample photos equally well, so these sit mid-range rather than on a best fit.
 TICK_REACH = 0.3
 TICK_INK = 0.25
+TICK_THICKNESS = 0.1      # a pen stroke, as a share of the label height
+APART_ENOUGH = 0.4        # two ticks closer together than this are one tick read twice
 
 
 def _levels_of(gray: np.ndarray, y_axis, boxes: np.ndarray) -> np.ndarray:
@@ -447,15 +449,19 @@ def _tick_rows(gray: np.ndarray, y_axis, label_height: float) -> list[int]:
     if strip.size == 0:
         return []
 
-    inkiness = np.convolve(strip.mean(axis=1), np.ones(3) / 3, "same")
+    # a tick is about as thick as a pen stroke, so both the smoothing and the window a row
+    # has to be the inkiest of are measured against the writing rather than fixed in pixels
+    thickness = max(3, int(TICK_THICKNESS * label_height)) | 1
+    inkiness = np.convolve(strip.mean(axis=1), np.ones(thickness) / thickness, "same")
     background = np.median(inkiness)
     rows: list[int] = []
-    for row in range(2, len(inkiness) - 2):
+    for row in range(len(inkiness)):
         if inkiness[row] - background < TICK_INK:
             continue
-        if inkiness[row] < inkiness[max(0, row - 4):row + 5].max():
+        near = inkiness[max(0, row - thickness):row + thickness + 1]
+        if inkiness[row] < near.max():
             continue                                   # not the inkiest row of its own tick
-        if not rows or top + row - rows[-1] > 0.4 * label_height:
+        if not rows or top + row - rows[-1] > APART_ENOUGH * label_height:
             rows.append(top + row)
     return rows
 
