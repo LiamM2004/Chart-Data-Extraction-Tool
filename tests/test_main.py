@@ -13,10 +13,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from unittest import mock
 
+import cv2
 import numpy as np
 
 from chartx import main as chartx_main
 from chartx.detection.bar_graph import Bar
+from chartx.detection.line_graph import LinePoint
 from chartx.detection.pie_graph import Sector
 
 SAMPLE_BAR_CHART = str(Path(__file__).resolve().parent.parent / "sample-images" / "barchart_test.jpg")
@@ -70,6 +72,12 @@ class PrintTableTests(unittest.TestCase):
         _, shown = printed(chartx_main.print_table, [bar])
         self.assertIn("relative_height", shown.splitlines()[0])
         self.assertIn("#ff0000", shown.splitlines()[2])
+
+    def test_prints_points_from_the_line_graph_detector(self):
+        point = LinePoint(1, "Jan", 10, 20, 7.5, "#0000ff")
+        _, shown = printed(chartx_main.print_table, [point])
+        self.assertIn("category", shown.splitlines()[0])
+        self.assertIn("Jan", shown.splitlines()[2])
 
 
 class DrawBarBoxesTests(unittest.TestCase):
@@ -131,7 +139,8 @@ class MainTests(unittest.TestCase):
         with mock.patch("sys.argv", ["chartx", "scatter", SAMPLE_BAR_CHART]):
             code, shown = printed(chartx_main.main)
         self.assertEqual(code, 1)
-        self.assertIn("bar|pie", shown)
+        for chart_type in chartx_main.DETECTORS:
+            self.assertIn(chart_type, shown)
 
     def test_a_photo_that_cannot_be_read_is_reported(self):
         with mock.patch("sys.argv", ["chartx", "bar", "no/such/photo.jpg"]):
@@ -152,6 +161,20 @@ class MainTests(unittest.TestCase):
         imshow.assert_called_once()
         self.assertEqual(len(draw.call_args.args[1]), 5)
 
+    def test_line_uses_the_line_detector_and_draws_no_bar_boxes(self):
+        point = LinePoint(1, "Jan", 10, 20, 7.5, "#0000ff")
+        with mock.patch("sys.argv", ["chartx", "line", SAMPLE_BAR_CHART]), \
+                mock.patch.object(chartx_main.line_graph, "detect_line_graph", return_value=[point]) as line, \
+                mock.patch.object(chartx_main.bar_graph, "detect_bar_graph") as bar, \
+                mock.patch.object(chartx_main.plt, "imshow"), \
+                mock.patch.object(chartx_main, "draw_bar_boxes") as draw:
+            code, shown = printed(chartx_main.main)
+        self.assertIsNone(code)
+        line.assert_called_once()
+        bar.assert_not_called()
+        draw.assert_not_called()
+        self.assertIn("Jan", shown)
+
     def test_pie_uses_the_pie_detector_and_draws_no_bar_boxes(self):
         sector = Sector(1, 0.0, 90.0, 25.0, None, "Red")
         with mock.patch("sys.argv", ["chartx", "pie", SAMPLE_BAR_CHART]), \
@@ -170,6 +193,7 @@ class MainTests(unittest.TestCase):
     def test_a_chosen_chart_that_is_not_found_says_so_and_still_shows_the_photo(self):
         with mock.patch("sys.argv", ["chartx", "bar", SAMPLE_BAR_CHART]), \
                 mock.patch.object(chartx_main.bar_graph, "detect_bar_graph", return_value=[]), \
+                mock.patch.object(chartx_main.line_graph, "detect_line_graph", return_value=[]), \
                 mock.patch.object(chartx_main.plt, "imshow") as imshow:
             code, shown = printed(chartx_main.main)
         self.assertIsNone(code)
@@ -211,6 +235,13 @@ class AutoModeTests(unittest.TestCase):
         self.assertIn("Red", shown)
         self.assertEqual(self.draw.call_args.args[1], [bar])
 
+    def test_a_line_chart_is_reported_and_draws_no_bar_boxes(self):
+        point = LinePoint(1, "Jan", 10, 20, 7.5, "#0000ff")
+        _, shown, _ = self.run_auto([("line", [point])])
+        self.assertIn("Found a line chart", shown)
+        self.assertIn("Jan", shown)
+        self.draw.assert_not_called()
+
     def test_a_pie_draws_no_bar_boxes(self):
         sector = Sector(1, 0.0, 90.0, 25.0, None, "Red")
         _, shown, _ = self.run_auto([("pie", [sector])])
@@ -229,7 +260,7 @@ class AutoModeTests(unittest.TestCase):
         code, shown, _ = self.run_auto([])
         self.assertIsNone(code)
         self.assertIn("No chart found", shown)
-        self.assertIn("bar, pie", shown)              # says which charts are supported
+        self.assertIn("bar, line, pie", shown)        # says which charts are supported
         self.assertNotIn("index", shown)              # no empty table
         self.imshow.assert_called_once()
         self.show.assert_called_once()
@@ -237,16 +268,118 @@ class AutoModeTests(unittest.TestCase):
 
 
 class ParseArgumentsTests(unittest.TestCase):
+    """The command line's words, with the --options already taken out."""
+
     def test_just_a_photo_means_auto(self):
-        self.assertEqual(chartx_main.parse_arguments(["photo.jpg"]), ("auto", "photo.jpg"))
+        self.assertEqual(chartx_main.parse_arguments(["photo.jpg"]), ("auto", "photo.jpg", []))
 
     def test_a_chart_type_then_a_photo(self):
-        for chart_type in ("auto", "bar", "pie"):
-            self.assertEqual(chartx_main.parse_arguments([chart_type, "photo.jpg"]), (chart_type, "photo.jpg"))
+        for chart_type in ("auto", *chartx_main.DETECTORS):
+            self.assertEqual(chartx_main.parse_arguments([chart_type, "photo.jpg"]),
+                             (chart_type, "photo.jpg", []))
 
-    def test_anything_else_is_refused(self):
-        for arguments in ([], ["bar"], ["scatter", "photo.jpg"], ["photo.jpg", "bar"], ["bar", "a.jpg", "b.jpg"]):
-            self.assertIsNone(chartx_main.parse_arguments(arguments), arguments)
+    def test_the_words_after_the_photo_are_kept_for_the_corners(self):
+        self.assertEqual(chartx_main.parse_arguments(["line", "photo.jpg", "1,2", "3,4"]),
+                         ("line", "photo.jpg", ["1,2", "3,4"]))
+        self.assertEqual(chartx_main.parse_arguments(["photo.jpg", "1,2"]), ("auto", "photo.jpg", ["1,2"]))
+
+    def test_no_photo_is_refused(self):
+        for words in ([], ["bar"], ["auto"]):
+            self.assertIsNone(chartx_main.parse_arguments(words), words)
+
+
+class CommandLineShapeTests(unittest.TestCase):
+    """Words in the wrong place print the usage rather than being guessed at."""
+
+    def usage_for(self, *words):
+        with mock.patch("sys.argv", ["chartx", *words]):
+            code, shown = printed(chartx_main.main)
+        self.assertEqual(code, 1, words)
+        self.assertIn("Usage", shown)
+
+    def test_the_chart_type_after_the_photo_is_refused(self):
+        self.usage_for(SAMPLE_BAR_CHART, "bar")
+
+    def test_two_photos_are_refused(self):
+        self.usage_for("bar", SAMPLE_BAR_CHART, SAMPLE_BAR_CHART)
+
+    def test_auto_takes_the_corner_options_too(self):
+        with mock.patch("sys.argv", ["chartx", SAMPLE_BAR_CHART, "--corners",
+                                     "10,20", "900,15", "920,700", "5,690"]), \
+                mock.patch.object(chartx_main, "detect_chart", return_value=[]) as detect, \
+                mock.patch.object(chartx_main, "deskew", wraps=chartx_main.deskew) as deskew, \
+                mock.patch.object(chartx_main.plt, "imshow"), mock.patch.object(chartx_main.plt, "show"):
+            code, _ = printed(chartx_main.main)
+        self.assertIsNone(code)
+        detect.assert_called_once()
+        self.assertEqual(deskew.call_args.kwargs["corners"].shape, (4, 2))
+
+
+class CornerOptionTests(unittest.TestCase):
+    """The board's corners can be placed by hand when deskew gets them wrong."""
+
+    def setUp(self):
+        for name in ("show", "imshow"):
+            patcher = mock.patch.object(chartx_main.plt, name)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        patcher = mock.patch.object(chartx_main.bar_graph, "detect_bar_graph", return_value=[])
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def run_with(self, *words):
+        with mock.patch("sys.argv", ["chartx", "bar", SAMPLE_BAR_CHART, *words]), \
+                mock.patch.object(chartx_main, "select_corners_manually",
+                                  return_value=None) as window:
+            code, shown = printed(chartx_main.main)
+        return window, code, shown
+
+    def test_the_corner_window_opens_only_when_it_is_asked_for(self):
+        window, _, _ = self.run_with()
+        window.assert_not_called()
+
+    def test_manual_opens_the_corner_window(self):
+        window, code, _ = self.run_with("--manual")
+        window.assert_called_once()
+        self.assertIsNone(code)
+
+    def test_manual_opens_the_window_even_when_deskew_is_happy(self):
+        """The photo that most needs the corners setting by hand is the one deskew was sure
+        about and still got wrong, so --manual must not wait to be asked."""
+        photo = cv2.imread(SAMPLE_BAR_CHART)
+        sure = mock.Mock(image=photo, corners=None, needs_review=False, warnings=[])
+        with mock.patch("sys.argv", ["chartx", "bar", SAMPLE_BAR_CHART, "--manual"]), \
+                mock.patch.object(chartx_main, "deskew", return_value=sure), \
+                mock.patch.object(chartx_main, "select_corners_manually",
+                                  return_value=None) as window:
+            printed(chartx_main.main)
+        window.assert_called_once()
+
+    def test_corners_given_on_the_command_line_are_used_without_a_window(self):
+        with mock.patch("sys.argv", ["chartx", "bar", SAMPLE_BAR_CHART, "--corners",
+                                     "10,20", "900,15", "920,700", "5,690"]), \
+                mock.patch.object(chartx_main, "select_corners_manually") as window, \
+                mock.patch.object(chartx_main, "deskew", wraps=chartx_main.deskew) as deskew:
+            code, _ = printed(chartx_main.main)
+        self.assertIsNone(code)
+        window.assert_not_called()
+        self.assertEqual(deskew.call_args.kwargs["corners"].shape, (4, 2))
+
+    def test_too_few_corners_is_an_error_rather_than_quietly_ignored(self):
+        with mock.patch("sys.argv", ["chartx", "bar", SAMPLE_BAR_CHART, "--corners", "1,2", "3,4"]):
+            code, shown = printed(chartx_main.main)
+        self.assertEqual(code, 1)
+        self.assertIn("four x,y points", shown)
+
+    def test_an_unknown_option_is_an_error_rather_than_quietly_ignored(self):
+        with mock.patch("sys.argv", ["chartx", "bar", SAMPLE_BAR_CHART, "--manul"]):
+            code, shown = printed(chartx_main.main)
+        self.assertEqual(code, 1)
+        self.assertIn("--manul", shown)
+
+    def test_what_deskew_warns_about_reaches_the_user(self):
+        _, _, shown = self.run_with()
+        self.assertIn("note:", shown, "deskew's warnings should not be swallowed")
 
 
 if __name__ == "__main__":
