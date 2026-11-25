@@ -1,8 +1,9 @@
 """Reading the handwritten text on a chart, with PaddleOCR.
 
-One call per label crop, never one for a whole strip of them: given a strip, PaddleOCR returns
-the row as a single box ("1990 1995 2000 2005 ...") that cannot be split back into one text
-per label.
+A whole image at a time keeps where each piece of text sits, which is how a label is matched
+to the bar or sector it belongs to. One crop at a time is for a label that has already been
+cut out: asked for a strip of several, PaddleOCR returns the row as a single box
+("1990 1995 2000 ...") that cannot be split back up.
 """
 import functools
 
@@ -23,7 +24,15 @@ def _engine():
                      use_textline_orientation=False, enable_mkldnn=False)
 
 
-# Read the text in one small crop
+def read_page(image: np.ndarray) -> list[tuple[list, str, float]]:
+    """Every piece of text in the image, as (its four corner points, what it says, confidence)."""
+    if image.ndim == 2:
+        image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+    page = _engine().predict(image)[0]
+    return [(poly.tolist(), text, score)
+            for poly, text, score in zip(page["rec_polys"], page["rec_texts"], page["rec_scores"])]
+
+
 def read(crop: np.ndarray) -> str:
     """What one label crop says, with the spaces taken out, or "" if nothing could be read.
 
@@ -32,11 +41,8 @@ def read(crop: np.ndarray) -> str:
     """
     if crop.size == 0:
         return ""
-    if crop.ndim == 2:
-        crop = cv2.cvtColor(crop, cv2.COLOR_GRAY2BGR)
-
-    page = _engine().predict(crop)[0]
-    if not page["rec_texts"]:
+    found = read_page(crop)
+    if not found:
         return ""
-    text, _ = max(zip(page["rec_texts"], page["rec_scores"]), key=lambda found: found[1])
+    _, text, _ = max(found, key=lambda one: one[2])
     return "".join(text.split())

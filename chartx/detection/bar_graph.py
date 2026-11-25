@@ -207,13 +207,6 @@ def _bar_labels(image, boxes):
     Returns one label (or None) per bar. If PaddleOCR is not installed a warning is
     given and every label is None.
     """
-    try:
-        from chartx.detection.pie_graph import _paddle, _read_text   # loads PaddleOCR (slow)
-        ocr = _paddle()
-    except ImportError:
-        warnings.warn("PaddleOCR is not installed, so the bar labels can't be read")
-        return [None] * len(boxes)
-
     baseline = int(np.median(boxes[:, 1] + boxes[:, 3]))
     strip_height = max(40, int(0.2 * boxes[:, 3].max()))
     top = baseline + 2                                   # just below the axis line
@@ -221,7 +214,14 @@ def _bar_labels(image, boxes):
     if strip.shape[0] < 5:                               # the bars reach the bottom of the photo
         return [None] * len(boxes)
 
-    return _assign_labels(_read_text(ocr, strip), boxes)
+    try:
+        from chartx.detection import ocr                     # loads PaddleOCR on the first call
+        found = ocr.read_page(strip)
+    except ImportError:
+        warnings.warn("PaddleOCR is not installed, so the bar labels can't be read")
+        return [None] * len(boxes)
+
+    return _assign_labels(found, boxes)
 
 
 # Detect and extract a bar graph from an image and return an object
