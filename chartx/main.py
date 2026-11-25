@@ -1,12 +1,17 @@
-"""Command line: straighten a photo of a chart, clean up its glare and read its data.
+"""Read the data from a photo of a chart.
 
-    python -m chartx.main photo.jpg
-    python -m chartx.main photo.jpg --manual                      # drag the board corners first
-    python -m chartx.main photo.jpg --corners 10,20 900,15 920,700 5,690
+    python -m chartx bar photo.jpg     # a bar chart
+    python -m chartx line photo.jpg    # a line chart
+    python -m chartx pie photo.jpg     # a pie chart
 
-Everything depends on the photo being straightened first, and that can fail; when it does the
-reason is printed, and --manual or --corners let you place the board yourself. A window only
-ever opens when asked for, so a scripted run never stops on one.
+    python -m chartx line photo.jpg --manual     # place the board's corners by hand first
+    python -m chartx line photo.jpg --corners 10,20 900,15 920,700 5,690
+
+The photo is straightened and its glare cleaned up, then the chosen detector reads the chart.
+The data is printed as a table and the cleaned photo is shown (with the bars boxed for bar
+charts). Everything depends on the straightening, which can fail; when it does the reason is
+printed, and --manual or --corners let you place the board yourself. A window only ever opens
+when asked for, so a scripted run never stops on one.
 """
 
 import sys
@@ -14,13 +19,22 @@ import sys
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.patches import Rectangle
 
-from chartx.detection import bar_graph, line_graph
+from chartx.detection import bar_graph, line_graph, pie_graph
 from chartx.preprocessing import glare
 from chartx.preprocessing.deskew import deskew, select_corners_manually
 
 
 from dataclasses import fields
+
+
+# The chart types the user can choose from, and the detector that reads each one
+DETECTORS = {
+    "bar": lambda image: bar_graph.detect_bar_graph(image),
+    "line": lambda image: line_graph.detect_line_graph(image),
+    "pie": lambda image: pie_graph.detect_pie_graph(image),
+}
 
 
 # Display data for a graph or chart
@@ -41,6 +55,15 @@ def print_table(rows):
     print(line(["-" * w for w in widths]))
     for row in cells:
         print(line(row))
+
+
+def draw_bar_boxes(ax, bars):
+    """Outline each detected bar on the plot and label it with its index from the table."""
+    for bar in bars:
+        ax.add_patch(Rectangle((bar.x, bar.y), bar.width, bar.height,
+                               fill=False, edgecolor="lime", linewidth=2))
+        ax.text(bar.x + bar.width / 2, bar.y - 5, str(bar.index), color="lime",
+                fontsize=12, fontweight="bold", ha="center", va="bottom")
 
 
 def preprocess(photo, corners=None, ask_for_corners=None, note=None):
@@ -68,56 +91,39 @@ def preprocess(photo, corners=None, ask_for_corners=None, note=None):
     return glare.clean_whiteboard(straightened.image)
 
 
-def extract(image):
-    """Read the data out of a preprocessed chart image.
-
-    Bars are looked for first, because a bar chart's axes would otherwise be followed as if
-    the bars were a line. Returns (what the chart is, the rows read off it); the chart is None
-    and the rows empty if neither kind was found.
-    """
-    bars = bar_graph.detect_bar_graph(image)
-    if bars:
-        return "bar chart", bars
-
-    points = line_graph.detect_line_graph(image)
-    if points:
-        return "line chart", points
-
-    return None, []
-
-
 def _drag_the_corners(photo, best_guess):
     """Open the corner window so the board can be placed by hand. None if it was cancelled."""
-    print("  Drag the board's four corners into place, then press Enter (Esc to keep what we have).")
+    print("  Drag the board\'s four corners into place, then press Enter (Esc to keep what we have).")
     return select_corners_manually(photo, initial=best_guess)
 
 
 def _corners_from(words):
     """The four "x,y" corners given on the command line, as an array. Raises ValueError if
-    they aren't four readable points, rather than quietly carrying on without them."""
+    they aren\'t four readable points, rather than quietly carrying on without them."""
     points = []
     for word in words:
         across, _, down = word.partition(",")
-        points.append((float(across), float(down)))        # ValueError if it isn't a number
+        points.append((float(across), float(down)))        # ValueError if it isn\'t a number
     if len(points) != 4:
         raise ValueError(f"--corners wants four x,y points, got {len(points)}")
     return np.array(points, np.float32)
 
 
 def main():
-    # Get the image path from the command line
+    # Get the chart type, image path and options from the command line
     arguments = [word for word in sys.argv[1:] if not word.startswith("-")]
     flags = [word for word in sys.argv[1:] if word.startswith("-")]
-    if not arguments:
-        print("Usage: python -m chartx.main image.jpg [--manual] [--corners x,y x,y x,y x,y]")
+    if len(arguments) < 2 or arguments[0] not in DETECTORS:
+        print(f"Usage: python -m chartx {{{'|'.join(DETECTORS)}}} image.jpg "
+              f"[--manual] [--corners x,y x,y x,y x,y]")
         exit(1)
     unknown = [flag for flag in flags if flag not in ("--manual", "--corners")]
     if unknown:
         print(f"Unknown option(s): {' '.join(unknown)}")
         exit(1)
-    path = arguments[0]
+    chart_type, path = arguments[0], arguments[1]
     try:
-        corners = _corners_from(arguments[1:]) if "--corners" in flags else None
+        corners = _corners_from(arguments[2:]) if "--corners" in flags else None
     except ValueError as wrong:
         print(f"Error: {wrong}")
         exit(1)
@@ -128,23 +134,26 @@ def main():
         print(f"Error: image at {path} not found")
         exit(1)
 
-    # Straighten the image, then clean up its glare. The corner window is only ever opened
-    # when it is asked for, so a scripted run never stops on one.
+    # Straighten the image, then clean up its glare
     ask = _drag_the_corners if "--manual" in flags else None
-    result = preprocess(image, corners=corners, ask_for_corners=ask, note=lambda warning: print(f"  note: {warning}"))
+    result = preprocess(image, corners=corners, ask_for_corners=ask,
+                        note=lambda warning: print(f"  note: {warning}"))
 
-    # Work out what kind of chart it is and read its data off
-    kind, rows = extract(result)
+    # Find the chosen type of chart and get its data object list
+    chart_data = DETECTORS[chart_type](result)
 
-    if kind is None:
-        print("No bar chart or line chart found")
+    if not chart_data:
+        print(f"No {chart_type} chart found")
         if ask is None and corners is None:
             print("  If the board was not straightened, try again with --manual to set its corners.")
-    else:
-        print(f"Found a {kind}")
-    print_table(rows)
 
+    # Display the chart data
+    print_table(chart_data)
+
+    # Show the cleaned photo, with a box around each detected bar for bar charts
     plt.imshow(cv2.cvtColor(result, cv2.COLOR_BGR2RGB))
+    if chart_type == "bar":
+        draw_bar_boxes(plt.gca(), chart_data)
     plt.axis('off')
     plt.show()
 

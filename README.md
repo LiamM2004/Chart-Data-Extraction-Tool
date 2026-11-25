@@ -30,37 +30,33 @@ downloads the PaddleOCR models.
 
 ## Running
 
-From the project root, with the virtual environment active:
+From the project root, with the virtual environment active, give the type of chart and then the photo:
 
 ```
-python -m chartx.main sample-images/20261027_121908.jpg
+python -m chartx bar sample-images/barchart_test.jpg
+python -m chartx line sample-images/20261027_121908.jpg
+python -m chartx pie sample-images/IMG_1294.jpg
 ```
 
-This straightens the photo, cleans up its glare, then works out what kind of chart it is: bars
-first, and a line chart if there are no bars. What it read is printed as a table and the cleaned
-photo opens in a matplotlib window.
+The photo is straightened and its glare cleaned up, then the chosen detector reads the chart:
 
-```
-Found a line chart
-line  category  x    y    value   colour
-----  --------  ---  ---  ------  -------
-1     Jan       518  958  117.8   #000000
-1     Feb       621  870  136.75  #000000
-...
-```
+- **bar** (`chartx/detection/bar_graph.py`): each bar is printed as a table row (position, size,
+  height relative to the tallest bar, value, colour and the label written under it), and the
+  cleaned photo opens in a matplotlib window with a numbered box around each bar. Bar values are
+  measured against the top gridline, taken as 10 on an axis that starts at 0.
+- **line** (`chartx/detection/line_graph.py`): each reading is printed as a table row (which line
+  it belongs to, the category it sits under, where it is in the photo, its value on the y-axis
+  and the colour of the pen it was drawn with), and the cleaned photo opens in a matplotlib
+  window.
+- **pie** (`chartx/detection/pie_graph.py`): each sector is printed as a table row (angles,
+  percentage, the percentage written on it and its label), and the cleaned photo opens in a
+  matplotlib window.
 
-For a line chart each row is one reading: which line it belongs to, the category it sits under,
-where it is in the photo, its value on the y-axis and the colour of the pen it was drawn with.
-For a bar chart each row is a bar, with its position, size, height relative to the tallest bar,
-value and colour.
+Everything depends on the photo being straightened. When that fails the reason is printed; pass
+`--manual` to drag the board's four corners into place yourself, or `--corners x,y x,y x,y x,y`
+to give them outright.
 
 If the board can't be found, the photo is used as it is, without straightening.
-
-Pie charts are not in `main.py` yet. To preprocess a photo and print the sectors of its pie chart:
-
-```
-python -m chartx.detection.pie_graph sample-images/IMG_1294.jpg
-```
 
 Pies with coloured sectors and no drawn dividers (like `IMG_1294.jpg`) are first turned into a black
 line drawing: every fill gets one label by its hue, and the borders between labels become the dividers.
