@@ -5,8 +5,8 @@ white board, no glare/shadow.
     axes.scale.value(row)      # the axis value at a pixel row
     axes.categories            # the x-axis labels and where they sit
 
-Reading the labels needs Tesseract (see the README). Without it the axes are still
-found, but `scale` is None and the categories are unnamed.
+Reading the labels is done with PaddleOCR (chartx.detection.ocr), both the category text
+and the y-axis numbers.
 """
 
 from __future__ import annotations
@@ -18,21 +18,11 @@ from itertools import combinations
 import cv2
 import numpy as np
 
+from chartx.detection import ocr
 from chartx.preprocessing.deskew.rotation import find_ink, find_long_straight_lines
 
-DIGITS = "0123456789"
-
-# How to read one label: (padding round the crop, height to upscale it to, thicken the strokes?,
-# Tesseract page-segmentation mode). Handwriting reads differently depending on all four, so every
-# label is tried each of these ways and the readings are pooled; the fitting below then keeps
-# whichever readings line up with the other labels. These five were chosen by trying every
-# combination on the sample photos and keeping the smallest set that reads them all.
-OCR_ATTEMPTS = ((0.2, 48, True, 7), (0.2, 128, True, 7), (0.5, 48, False, 8),
-                (0.5, 96, True, 7), (0.5, 128, True, 8))
-
-# Runs of these are what category labels nearly always are. Slanted handwriting reads badly
-# enough that some labels come back as nonsense ("May" as "flosy" on one of the sample photos),
-# but the ones that do read say which sequence it is and where it starts, and the rest follow.
+# Runs of these are what category labels nearly always are. Where some come back as nonsense,
+# the ones that do read say which sequence it is and where it starts, and the rest follow.
 LABEL_SEQUENCES = (
     ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"),
     ("January", "February", "March", "April", "May", "June",
@@ -46,6 +36,9 @@ LABEL_SEQUENCES = (
 # to be that alike before a sequence is trusted to correct the others.
 CLEARLY_THE_SAME = 0.8
 ENOUGH_TO_GO_ON = 2
+
+# Grey level below which a pixel on the cleaned-up board counts as pen rather than paper.
+INK_IS_DARKER_THAN = 150
 
 
 @dataclass(frozen=True)
@@ -107,7 +100,7 @@ def find_axes(image: np.ndarray) -> Axes | None:
 
     value_boxes = _label_boxes(ink, _y_label_strip(y_axis, origin, image.shape), axis_length)
     scale = _fit_value_scale([_read_number(gray, box) for box in value_boxes],
-                             np.array([box[1] + box[3] / 2 for box in value_boxes]),
+                             _levels_of(gray, y_axis, value_boxes),
                              _median_gap(value_boxes, axis=1))
 
     category_boxes = _label_boxes(ink, _x_label_strip(x_axis, origin, image.shape), axis_length)
@@ -231,6 +224,49 @@ def _x_label_strip(x_axis, origin, shape) -> tuple[int, int, int, int]:
     return left, top, max(0, right - left), max(0, min(shape[0], top + height) - top)
 
 
+# An axis title sits beyond the tick labels: further out than a y-axis's numbers, below an
+# x-axis's categories. Between the two there is a band of blank board at least this much of the
+# strip across. The labels themselves are never parted by that much, so a band this wide with
+# writing on both sides of it is the gap between the labels and a title.
+TITLE_BAND = 0.08
+
+
+def _label_side_of_the_title(patch: np.ndarray, across: int) -> tuple[int, int]:
+    """Where to cut `patch` to drop an axis title, as the (start, stop) of the part to keep.
+
+    The tick labels are written against the axis and the title beyond them, so the strip holds
+    two blocks of writing with blank board between. The widest such band with ink on both sides
+    is the one between them. A chart with no title has writing in one block and is left whole,
+    which is why this looks for a band *between* two blocks rather than for a title directly.
+
+    `across` is the axis the two are separated along: columns (1) for a y-strip, whose title
+    is out to the left of its numbers, and rows (0) for an x-strip, whose title is below its
+    categories. So a y-strip keeps the high end of the cut and an x-strip the low end.
+    """
+    length = patch.shape[across]                     # patch is (rows, columns)
+    inked = (patch > 0).any(axis=1 - across)         # ink anywhere along each row/column
+    if not inked.any():
+        return 0, length
+
+    first, last = int(np.argmax(inked)), length - int(np.argmax(inked[::-1]))
+    least = max(3, int(TITLE_BAND * length))
+    widest, band = 0, None
+    run_start = None
+    for place in range(first, last):                 # only bands with writing on both sides
+        if not inked[place]:
+            if run_start is None:
+                run_start = place
+            continue
+        if run_start is not None:
+            if place - run_start > widest:
+                widest, band = place - run_start, (run_start, place)
+            run_start = None
+
+    if band is None or widest < least:
+        return first, last                           # one block of writing: no title to drop
+    return (band[1], last) if across == 1 else (first, band[0])
+
+
 def _label_boxes(ink: np.ndarray, strip: tuple[int, int, int, int], axis_length: float) -> np.ndarray:
     """Boxes round the labels written in `strip`, in reading order, as (n, 4) x, y, w, h.
 
@@ -247,6 +283,16 @@ def _label_boxes(ink: np.ndarray, strip: tuple[int, int, int, int], axis_length:
         return np.empty((0, 4), int)
     patch = _without_specks(ink[top:top + height, left:left + width],
                             min_height=max(3, int(0.015 * axis_length)))
+
+    # drop the axis title, if the strip holds one as well as the labels
+    across = 1 if height > width else 0              # 1 = columns (y-strip), 0 = rows (x-strip)
+    start, stop = _label_side_of_the_title(patch, across)
+    if across == 1:
+        patch, left = patch[:, start:stop], left + start
+    else:
+        patch, top = patch[start:stop], top + start
+    if patch.size == 0:
+        return np.empty((0, 4), int)
 
     letter_heights = cv2.connectedComponentsWithStats(patch)[2][1:, 3]
     if len(letter_heights) == 0:
@@ -360,6 +406,62 @@ def _bounding_box(boxes: np.ndarray) -> tuple[int, int, int, int]:
     return left, top, (boxes[:, 0] + boxes[:, 2]).max() - left, (boxes[:, 1] + boxes[:, 3]).max() - top
 
 
+# ---------------------------------------------------------------- what row a label names
+
+# How far out from the axis to look for a tick, and how much ink a row needs to be one. The
+# reach is in label heights so it holds at any size the chart is drawn; anything from 0.15 to
+# 0.35 reads the sample photos equally well, so these sit mid-range rather than on a best fit.
+TICK_REACH = 0.3
+TICK_INK = 0.25
+
+
+def _levels_of(gray: np.ndarray, y_axis, boxes: np.ndarray) -> np.ndarray:
+    """The pixel row each y-axis label names: its tick mark, or its own middle if it has none.
+
+    The middle of a handwritten "140" is a poor guess at the level it labels, sitting up to
+    15 rows off on the sample photos and tilting the fitted scale by two or three per cent.
+    The tick drawn against the axis is a measurement of that level rather than a guess at it.
+    """
+    middles = np.array([box[1] + box[3] / 2 for box in boxes], float)
+    if len(boxes) == 0:
+        return middles
+
+    label_height = float(np.median(boxes[:, 3]))
+    ticks = _tick_rows(gray, y_axis, label_height)
+    if not ticks:
+        return middles
+
+    levels = middles.copy()
+    for place, (box, middle) in enumerate(zip(boxes, middles)):
+        nearest = min(ticks, key=lambda row: abs(row - middle))
+        if abs(nearest - middle) <= 0.9 * box[3]:      # a tick further off belongs to another label
+            levels[place] = nearest
+    return levels
+
+
+def _tick_rows(gray: np.ndarray, y_axis, label_height: float) -> list[int]:
+    """The rows of the tick marks: short spurs of ink sticking out of the y-axis, away from
+    the plot. Taken as the rows where that narrow strip is unusually inky."""
+    column = int((y_axis[0] + y_axis[2]) / 2)
+    top, bottom = sorted((int(y_axis[1]), int(y_axis[3])))
+    reach = max(3, int(TICK_REACH * label_height))
+    strip = (gray[top:bottom, max(0, column - reach - 2):max(1, column - 2)] < INK_IS_DARKER_THAN)
+    if strip.size == 0:
+        return []
+
+    inkiness = np.convolve(strip.mean(axis=1), np.ones(3) / 3, "same")
+    background = np.median(inkiness)
+    rows: list[int] = []
+    for row in range(2, len(inkiness) - 2):
+        if inkiness[row] - background < TICK_INK:
+            continue
+        if inkiness[row] < inkiness[max(0, row - 4):row + 5].max():
+            continue                                   # not the inkiest row of its own tick
+        if not rows or top + row - rows[-1] > 0.4 * label_height:
+            rows.append(top + row)
+    return rows
+
+
 def _without_specks(mask: np.ndarray, min_height: int) -> np.ndarray:
     """The mask with every blob shorter than `min_height` rubbed out (glare leaves a lot of those)."""
     count, labels, stats, _ = cv2.connectedComponentsWithStats(mask)
@@ -378,29 +480,6 @@ def _median_gap(boxes: np.ndarray, axis: int) -> float:
 
 # ---------------------------------------------------------------- reading the labels
 
-def _ocr(crop: np.ndarray, whitelist: str, upscale_to: int, thicken: bool, psm: int) -> str:
-    """Run Tesseract on one label crop. Returns "" if Tesseract isn't installed."""
-    try:
-        import pytesseract
-    except ImportError:
-        return ""
-    if crop.size == 0:
-        return ""
-
-    scale = upscale_to / crop.shape[0]
-    big = cv2.resize(crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
-    _, sharp = cv2.threshold(big, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    if thicken:
-        sharp = cv2.erode(sharp, np.ones((3, 3), np.uint8))      # the writing is black, so erode fattens it
-    sharp = cv2.copyMakeBorder(sharp, 25, 25, 25, 25, cv2.BORDER_CONSTANT, value=255)
-
-    config = f"--psm {psm}" + (f" -c tessedit_char_whitelist={whitelist}" if whitelist else "")
-    try:
-        return pytesseract.image_to_string(sharp, config=config).strip()
-    except Exception:                                            # Tesseract installed but not working
-        return ""
-
-
 def _crop(gray: np.ndarray, box, pad_frac: float = 0.35) -> np.ndarray:
     left, top, width, height = box
     pad = max(3, int(height * pad_frac))
@@ -408,28 +487,19 @@ def _crop(gray: np.ndarray, box, pad_frac: float = 0.35) -> np.ndarray:
 
 
 def _read_number(gray: np.ndarray, box) -> list[float]:
-    """Every number this label might say, most-read first.
+    """What this y-axis label says, as a list holding one number, or empty if it isn't one.
 
-    A "4" drawn with an open top is a "9" to Tesseract, and a faint "25" is often just "2".
-    Rather than commit to one reading, all of them are returned, and _fit_value_scale() keeps
-    whichever ones line up with the other labels.
+    A list because _fit_value_scale() weighs up every candidate reading of a label. Only one
+    is offered now, but pooling several is the repair to reach for if a number ever misreads.
     """
-    votes: dict[float, int] = {}
-    for pad_frac, upscale_to, thicken, psm in OCR_ATTEMPTS:
-        text = _ocr(_crop(gray, box, pad_frac), DIGITS, upscale_to, thicken, psm)
-        if text.isdigit():
-            votes[float(text)] = votes.get(float(text), 0) + 1
-    return sorted(votes, key=lambda value: -votes[value])
+    text = ocr.read(_crop(gray, box))
+    return [float(text)] if text.isdigit() else []
 
 
 def _read_text(gray: np.ndarray, box) -> str:
-    """What a category label says, or "" if it can't be read."""
-    votes: dict[str, int] = {}
-    for pad_frac, upscale_to, thicken, psm in OCR_ATTEMPTS:
-        text = "".join(ch for ch in _ocr(_crop(gray, box, pad_frac), "", upscale_to, thicken, psm) if ch.isalnum())
-        if text:
-            votes[text] = votes.get(text, 0) + 1
-    return max(votes, key=lambda text: (votes[text], len(text)), default="")
+    """What a category label says, or "" if it can't be read. Some come back as nonsense,
+    which the sequence fitting below is there to repair."""
+    return ocr.read(_crop(gray, box))
 
 
 def _named_in_sequence(texts: list[str]) -> list[str] | None:
@@ -438,7 +508,7 @@ def _named_in_sequence(texts: list[str]) -> list[str] | None:
     Every sequence is tried at every starting point, and the run that the readings look most
     like wins. A couple of labels read clearly is enough to pin down which run it is, and the
     labels that came back as nonsense are then named from their place in it rather than from
-    what Tesseract made of them.
+    what the OCR made of them.
     """
     best, best_score = None, 0.0
     for sequence in LABEL_SEQUENCES:
@@ -457,7 +527,7 @@ def _numbered_in_steps(texts: list[str]) -> list[str] | None:
 
     The same idea as _named_in_sequence() for the axes that count rather than name: 1, 2, 3, 4
     or 1990, 1995, 2000. Each pair of readings that parse as numbers proposes a first value and
-    a step, and the run those two imply is scored against every reading, so a label Tesseract
+    a step, and the run those two imply is scored against every reading, so a label the OCR
     got wrong is named from its place in the run like a misread month is.
     """
     read = [(place, float(word)) for place, word in enumerate(texts) if word.isdigit()]
@@ -501,7 +571,7 @@ def _fit_value_scale(readings: list[list[float]], rows: np.ndarray, row_gap: flo
     if len(pairs) < 2 or tolerance <= 0:
         return None
 
-    best, best_score = None, (1.0, 0.0)      # under one whole label's worth is not a fit
+    best, best_score = None, (1, 0.0)        # one agreeing label is not a fit
     for (row_a, value_a), (row_b, value_b) in combinations(pairs, 2):
         if row_a == row_b or value_a == value_b:
             continue
@@ -520,29 +590,24 @@ def _fit_value_scale(readings: list[list[float]], rows: np.ndarray, row_gap: flo
     return _refit_on_agreeing_labels(best, readings, rows, tolerance)
 
 
-def _how_well_it_fits(scale: ValueScale, readings, rows, tolerance) -> tuple[float, float]:
-    """How well a scale explains the labels: (what the labels it agrees with are worth,
-    minus how far out they are).
+def _how_well_it_fits(scale: ValueScale, readings, rows, tolerance) -> tuple[int, float]:
+    """How well a scale explains the labels: (how many it agrees with, minus how far out they
+    are). The second term only breaks ties between scales matching the same number of labels.
 
-    A label counts for how strongly its reading was voted for, so one matched through
-    Tesseract's first choice counts a whole label and one matched through its third counts a
-    third. Plain counting lets a run of truncated readings win: where "25, 20, 15, 10" come
-    back as "3, 2, 1, 0" those four sit exactly on a line of their own and outnumber the two
-    or three labels that were read properly, and the axis then reads a tenth of its real size.
-    Weighting by the vote puts the properly read labels back in front.
+    If labels ever carry several candidate readings again, weight each by how well voted its
+    reading was: a run of truncated readings ("25, 20, 15, 10" as "3, 2, 1, 0") sits on a line
+    of its own and can otherwise outvote the labels that were read properly.
     """
-    matched = []
+    errors = []
     for row, values in zip(rows, readings):
         if not values:
             continue
-        rank, error = min(((place, abs(scale.row(value) - row))
-                           for place, value in enumerate(values)), key=lambda pair: pair[1])
+        error = min(abs(scale.row(value) - row) for value in values)
         if error <= tolerance:
-            matched.append((rank, error))
-    if not matched:
-        return 0.0, 0.0
-    worth = sum(1.0 / (1 + rank) for rank, _ in matched)
-    return worth, -sum(error for _, error in matched) / len(matched)
+            errors.append(error)
+    if not errors:
+        return 0, 0.0
+    return len(errors), -sum(errors) / len(errors)
 
 
 def _refit_on_agreeing_labels(scale: ValueScale, readings, rows, tolerance) -> ValueScale:

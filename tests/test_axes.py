@@ -187,14 +187,8 @@ class NamedSequenceTests(unittest.TestCase):
 
 
 class ReadingLabelsTests(unittest.TestCase):
-    """These need Tesseract, so they are skipped where it isn't installed."""
-
-    @classmethod
-    def setUpClass(cls):
-        if not axes_module._ocr(np.full((40, 40), 255, np.uint8), "0123456789", 48, False, 10):
-            if not axes_module._ocr(digits(np.full((60, 60, 3), 255, np.uint8), "7", (30, 30))[:, :, 0],
-                                    "0123456789", 64, False, 10):
-                raise unittest.SkipTest("Tesseract is not installed")
+    """These read both axes. PaddleOCR does the reading and `pip` installs it, so unlike the
+    Tesseract these replace, there is no installation to check for and nothing to skip."""
 
     def test_reads_the_scale_off_a_drawn_chart(self):
         image = with_axes(blank(1000, 1100), origin=(260, 820), top=120, right=1000)
