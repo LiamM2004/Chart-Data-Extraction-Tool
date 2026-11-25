@@ -12,7 +12,7 @@ dependencies = [
     # they share the same cv2 folder and overwrite each other
     "opencv-contrib-python==4.10.0.84",
     "numpy",
-    "paddleocr==3.7.0",    # reads the labels in pie charts (chartx/detection/pie_graph.py)
+    "paddleocr==3.7.0",    # reads every label: axes (chartx/detection/ocr.py) and pie sectors
     "paddlepaddle==3.3.1", # the engine PaddleOCR runs on
     "matplotlib",  # used by the exploration notebook (chartx/preprocessing/whiteboard_clean.ipynb)
 ]

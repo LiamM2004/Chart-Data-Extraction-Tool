@@ -13,7 +13,7 @@ from unittest import mock
 import cv2
 import numpy as np
 
-from chartx.detection import bar_graph, pie_graph
+from chartx.detection import bar_graph, ocr
 from chartx.main import preprocess
 
 SAMPLE_BAR_CHART = str(Path(__file__).resolve().parent.parent / "sample-images" / "barchart_test.jpg")
@@ -60,7 +60,7 @@ class BarLabelsTests(unittest.TestCase):
 
     def test_without_paddleocr_the_labels_are_none_and_a_warning_is_given(self):
         image = preprocess(cv2.imread(SAMPLE_BAR_CHART))
-        with mock.patch.object(pie_graph, "_paddle", side_effect=ImportError):
+        with mock.patch.object(ocr, "read_page", side_effect=ImportError):
             with self.assertWarnsRegex(UserWarning, "PaddleOCR"):
                 bars = bar_graph.detect_bar_graph(image)
         self.assertEqual(len(bars), 5)
@@ -69,9 +69,9 @@ class BarLabelsTests(unittest.TestCase):
     def test_bars_that_reach_the_bottom_of_the_photo_have_no_labels(self):
         image = np.zeros((300, 400, 3), np.uint8)
         boxes = np.array([[50, 100, 60, 197], [150, 150, 60, 147], [250, 200, 60, 97]])
-        with mock.patch.object(pie_graph, "_read_text") as read_text:
+        with mock.patch.object(ocr, "read_page") as read_page:
             self.assertEqual(bar_graph._bar_labels(image, boxes), [None, None, None])
-        read_text.assert_not_called()
+        read_page.assert_not_called()
 
     def test_horizontal_bars_are_not_given_labels(self):
         image = preprocess(cv2.imread(SAMPLE_BAR_CHART))
