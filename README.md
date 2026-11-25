@@ -161,9 +161,8 @@ tests/                python -m unittest discover tests -v
    that is all digits becomes a candidate value for the y-axis scale; the rest are category text.
    Category labels are then matched against the sequences charts normally use — the months, the
    days of the week, quarters, or an evenly spaced run of numbers. Two labels reading clearly is enough to say which sequence it is
-   and where it starts, and the rest are named from their place in it. Under Tesseract this is
-   what turned "Sen, Feb, Mar, Apr, flosy, So" into "Jan ... Jun"; PaddleOCR reads all six
-   months directly, so on these photos the step now only repairs the years.
+   and where it starts, and the rest are named from their place in it. On the sample photos it
+   is the years it repairs; the months read directly.
 4. **Fit the y-axis.** Axis labels climb evenly, so the right scale is the one that puts the most
    labels where it predicts them. Every reading of every label is tried, which lets a label that
    was read three different ways be used through whichever reading agrees with its neighbours,
@@ -178,34 +177,15 @@ tests/                python -m unittest discover tests -v
    label. On these photos the labels are written at a slant, so their middles sit well to one side
    of the points they belong to.
 
-**Category labels** all 26 of them on the sample photos, now read correctly. Getting there meant
-changing engine, not trying harder with the old one. Tesseract cannot read this handwriting: it
-gets 12 of the 26, and none at all of the 14 that are years ("1990" comes back as "440"). Nor was
-that a cropping problem — over 216 combinations of crop, scale, thickening and page mode, the
-union of *everything* Tesseract returns holds the right answer for only 8 of the 26, and 2 of the
-14 years. Fitting a numeric run to readings that poor was worse than useless: the true sequence
-(1990, 1995 ... 2020) came 2381st out of 16000 candidates.
+**Category labels**, all 26 of them on the sample photos, read correctly. PaddleOCR gets 23 of
+them straight off and the numeric-run fitting repairs the last three, all of which are years
+("990", "20102"). It is asked one label crop at a time: given a whole strip in one call it
+returns the row as a single box ("1990 1995 2000 ..."), which cannot be split back into one text
+per label.
 
-PaddleOCR reads 23 of the 26 straight off, including 11 of the years, and the numeric-run fitting
-then repairs the last three — "990", "20102" and "2010 2" — which is exactly the job it could not
-do on Tesseract's output. It is asked one label crop at a time; given the whole label strip in one
-call it returns the entire row as a single box ("1990 1995 2000 ..."), which cannot be split back
-into one text per label, and scores 0 of 26.
-
-**The y-axis numbers moved to PaddleOCR too, and Tesseract is gone from the project.** On value
-accuracy the two are a wash: PaddleOCR reads the two month charts very slightly better and
-Tesseract the two year charts, and the aggregate difference (1.08% against 1.15% mean error)
-comes from the year charts carrying 28 of the 40 measured values rather than from either engine
-being better. What separates them is how they fail. Of the 24 y-axis labels PaddleOCR reads 18
-and gets all 18 right, returning nothing for the other six; Tesseract returns lists like
-`[2004, 200]` and `[1604, 460, 160, 0]`, where the right answer is present but so is junk that
-can fit a straight line of its own. Reading nothing is the safer failure — a chart with too few
-readings is reported as not a line chart, rather than as a line chart with wrong values.
-
-That also removed the need for the vote-weighting the scale fitting used to carry. It existed
-because a run of Tesseract's truncated readings ("25, 20, 15, 10" coming back as "3, 2, 1, 0")
-could outnumber the properly read labels and shrink the axis tenfold. With one reading per label
-there is nothing to weight, so `_how_well_it_fits` now simply counts.
+Of the 24 y-axis labels it reads 18, and gets all 18 right, returning nothing for the other six.
+Reading nothing is the failure to want here — a chart with too few readings is turned down rather
+than reported with wrong values.
 
 A chart whose y-axis labels can't be read at all is not reported as a line chart. There would
 be no values to give for it, and in practice what reaches that point is usually not a line
@@ -232,11 +212,9 @@ another. Following each line forwards from where it has last been seen avoids bo
 
 Straightening each label on its own slant before reading it was also tried, since the categories
 are written on a slant and the y-axis numbers are not. It gained one label out of 26 and cost
-twice the OCR, so it is not in. That was measured against Tesseract, which the categories no
-longer use; PaddleOCR reads the slanted labels anyway, so there is nothing left for it to fix.
+twice the OCR, so it is not in: the slanted labels read correctly without it.
 
 Categories that are an evenly spaced run of numbers (1, 2, 3, 4) *are* read, the same way the
 months are: each pair of readings that parse as numbers proposes a first value and a step, and
-the best-fitting run names the labels the OCR got wrong. On Tesseract's output this did nothing
-for the years on the chicken-and-fish photos — too few of them were ever read clearly enough to
-say where the run starts. On PaddleOCR's it finishes the job, turning 23 of 26 into 26 of 26.
+the best-fitting run names the labels the OCR got wrong. It is what turns 23 of the 26 sample
+labels into 26 of 26, repairing the years the OCR fumbles.

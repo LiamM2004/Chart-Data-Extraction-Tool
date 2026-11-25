@@ -234,14 +234,12 @@ TITLE_BAND = 0.08
 def _label_side_of_the_title(patch: np.ndarray, across: int) -> tuple[int, int]:
     """Where to cut `patch` to drop an axis title, as the (start, stop) of the part to keep.
 
-    The tick labels are written against the axis and the title beyond them, so the strip holds
-    two blocks of writing with blank board between. The widest such band with ink on both sides
-    is the one between them. A chart with no title has writing in one block and is left whole,
-    which is why this looks for a band *between* two blocks rather than for a title directly.
+    The labels are written against the axis and the title beyond them, so the strip holds two
+    blocks of writing with blank board between. The widest band with ink on both sides is the
+    one between them; a chart with no title has one block and is left whole.
 
-    `across` is the axis the two are separated along: columns (1) for a y-strip, whose title
-    is out to the left of its numbers, and rows (0) for an x-strip, whose title is below its
-    categories. So a y-strip keeps the high end of the cut and an x-strip the low end.
+    `across` is which way they are separated: columns (1) for a y-strip, whose title is left of
+    its numbers, rows (0) for an x-strip, whose title is below its categories.
     """
     length = patch.shape[across]                     # patch is (rows, columns)
     inked = (patch > 0).any(axis=1 - across)         # ink anywhere along each row/column

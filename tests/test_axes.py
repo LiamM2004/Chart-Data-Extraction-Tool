@@ -187,8 +187,8 @@ class NamedSequenceTests(unittest.TestCase):
 
 
 class ReadingLabelsTests(unittest.TestCase):
-    """These read both axes. PaddleOCR does the reading and `pip` installs it, so unlike the
-    Tesseract these replace, there is no installation to check for and nothing to skip."""
+    """These read both axes. PaddleOCR does the reading and `pip` installs it, so there is no
+    separate program to check for and nothing to skip."""
 
     def test_reads_the_scale_off_a_drawn_chart(self):
         image = with_axes(blank(1000, 1100), origin=(260, 820), top=120, right=1000)
