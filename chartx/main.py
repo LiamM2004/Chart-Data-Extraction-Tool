@@ -1,17 +1,22 @@
 """Read the data from a photo of a chart.
 
+    python -m chartx photo.jpg         # work out which kind of chart it is
     python -m chartx bar photo.jpg     # a bar chart
     python -m chartx line photo.jpg    # a line chart
     python -m chartx pie photo.jpg     # a pie chart
 
-    python -m chartx line photo.jpg --manual     # place the board's corners by hand first
+    python -m chartx photo.jpg --manual          # place the board's corners by hand first
     python -m chartx line photo.jpg --corners 10,20 900,15 920,700 5,690
 
-The photo is straightened and its glare cleaned up, then the chosen detector reads the chart.
-The data is printed as a table and the cleaned photo is shown (with the bars boxed for bar
-charts). Everything depends on the straightening, which can fail; when it does the reason is
-printed, and --manual or --corners let you place the board yourself. A window only ever opens
-when asked for, so a scripted run never stops on one.
+The photo is straightened and its glare cleaned up, then the chart is read: by the chosen
+detector, or, with no chart type, by whichever detector finds a chart (see
+chartx/detection/auto.py). The data is printed as a table and the cleaned photo is shown (with
+the bars boxed for bar charts). If no chart is found, a message says so and the photo is still
+shown, so you can see what was looked at.
+
+Everything depends on the straightening, which can fail; when it does the reason is printed,
+and --manual or --corners let you place the board yourself. A window only ever opens when
+asked for, so a scripted run never stops on one.
 """
 
 import sys
@@ -22,6 +27,7 @@ import numpy as np
 from matplotlib.patches import Rectangle
 
 from chartx.detection import bar_graph, line_graph, pie_graph
+from chartx.detection.auto import detect_chart
 from chartx.preprocessing import glare
 from chartx.preprocessing.deskew import deskew, select_corners_manually
 
@@ -109,21 +115,43 @@ def _corners_from(words):
     return np.array(points, np.float32)
 
 
+# Read the chart type (optional) and image path from the command line
+def parse_arguments(words):
+    """Split the command line's words (options left out) into (chart type, image path, the
+    words after the path), or None if there is no image path. The chart type is "auto" when
+    none is given. The words after the path are only wanted as --corners' points."""
+    choices = ["auto", *DETECTORS]
+    if words and words[0] in choices:
+        return (words[0], words[1], words[2:]) if len(words) >= 2 else None
+    return ("auto", words[0], words[1:]) if words else None
+
+
+# Find the chart: the chosen kind, or whichever kind is in the photo
+def find_charts(chart_type, image):
+    """Returns [(chart type, data), ...], the chart to show first; [] if no chart is found."""
+    if chart_type == "auto":
+        return detect_chart(image)
+    data = DETECTORS[chart_type](image)
+    return [(chart_type, data)] if data else []
+
+
 def main():
     # Get the chart type, image path and options from the command line
-    arguments = [word for word in sys.argv[1:] if not word.startswith("-")]
+    words = [word for word in sys.argv[1:] if not word.startswith("-")]
     flags = [word for word in sys.argv[1:] if word.startswith("-")]
-    if len(arguments) < 2 or arguments[0] not in DETECTORS:
-        print(f"Usage: python -m chartx {{{'|'.join(DETECTORS)}}} image.jpg "
+    arguments = parse_arguments(words)
+    corners_given = "--corners" in flags
+    if arguments is None or (arguments[2] and not corners_given):
+        print(f"Usage: python -m chartx [auto|{'|'.join(DETECTORS)}] image.jpg "
               f"[--manual] [--corners x,y x,y x,y x,y]")
         exit(1)
     unknown = [flag for flag in flags if flag not in ("--manual", "--corners")]
     if unknown:
         print(f"Unknown option(s): {' '.join(unknown)}")
         exit(1)
-    chart_type, path = arguments[0], arguments[1]
+    chart_type, path, corner_words = arguments
     try:
-        corners = _corners_from(arguments[2:]) if "--corners" in flags else None
+        corners = _corners_from(corner_words) if corners_given else None
     except ValueError as wrong:
         print(f"Error: {wrong}")
         exit(1)
@@ -139,21 +167,29 @@ def main():
     result = preprocess(image, corners=corners, ask_for_corners=ask,
                         note=lambda warning: print(f"  note: {warning}"))
 
-    # Find the chosen type of chart and get its data object list
-    chart_data = DETECTORS[chart_type](result)
+    # Find the chart and get its data object list
+    found = find_charts(chart_type, result)
 
-    if not chart_data:
-        print(f"No {chart_type} chart found")
+    if not found:
+        kind = "chart" if chart_type == "auto" else f"{chart_type} chart"
+        print(f"No {kind} found in {path}.")
+        print(f"The supported charts are: {', '.join(DETECTORS)}. "
+              "The cleaned photo is shown so you can check what was looked at.")
         if ask is None and corners is None:
             print("  If the board was not straightened, try again with --manual to set its corners.")
-
-    # Display the chart data
-    print_table(chart_data)
+        found_type, data = None, []
+    else:
+        found_type, data = found[0]
+        if chart_type == "auto":
+            print(f"Found a {found_type} chart")
+        print_table(data)
+        for other_type, _ in found[1:]:
+            print(f"A {other_type} chart was also found. To read it: python -m chartx {other_type} {path}")
 
     # Show the cleaned photo, with a box around each detected bar for bar charts
     plt.imshow(cv2.cvtColor(result, cv2.COLOR_BGR2RGB))
-    if chart_type == "bar":
-        draw_bar_boxes(plt.gca(), chart_data)
+    if found_type == "bar":
+        draw_bar_boxes(plt.gca(), data)
     plt.axis('off')
     plt.show()
 
