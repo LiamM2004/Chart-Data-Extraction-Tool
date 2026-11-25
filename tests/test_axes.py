@@ -8,12 +8,16 @@ Run from the project root:
 """
 
 import unittest
+from pathlib import Path
 
 import cv2
 import numpy as np
 
 from chartx.detection import axes as axes_module
 from chartx.detection.axes import ValueScale, find_axes
+from chartx.main import preprocess
+
+SAMPLES = Path(__file__).resolve().parent.parent / "sample-images"
 
 WHITE = (255, 255, 255)
 BLACK = (0, 0, 0)
@@ -184,6 +188,74 @@ class NamedSequenceTests(unittest.TestCase):
 
     def test_a_sequence_shorter_than_the_labels_is_not_used(self):
         self.assertIsNone(axes_module._named_in_sequence(["Q1", "Q2", "Q3", "Q4", "Q5", "Q6"]))
+
+
+class AxisTitleTests(unittest.TestCase):
+    """An axis title shares the label strip with the tick labels and must not join them.
+
+    The photo is the case this is for: a title drawn up the side of the numbers welds itself
+    to them, "15" reads as "510" and every value comes out tens of times too large. Drawn
+    titles do not reproduce it, because the grouping only merges writing that sits alongside.
+    """
+
+    def y_label_boxes(self):
+        photo = cv2.imread(str(SAMPLES / "line_titles_angled.jpg"))
+        if photo is None:
+            self.skipTest("sample photo not available")
+        image = preprocess(photo)
+        y_axis, x_axis, origin = axes_module._axis_strokes(image)
+        strip = axes_module._y_label_strip(y_axis, origin, image.shape)
+        return axes_module._label_boxes(axes_module.find_ink(image), strip,
+                                        axes_module._length(x_axis)), strip
+
+    def test_the_title_up_the_side_is_left_out_of_the_number_labels(self):
+        found, strip = self.y_label_boxes()
+        self.assertEqual(len(found), 6, "expected one box per number: 25, 20, 15, 10, 5, 0")
+        widest = max(box[2] for box in found)
+        self.assertLess(widest, strip[2] / 2,
+                        "a label box reaching halfway across the strip has swallowed the title")
+
+    def test_one_block_of_writing_is_kept_whole(self):
+        patch = np.zeros((40, 100), np.uint8)
+        patch[10:30, 20:80] = 255
+        self.assertEqual(axes_module._label_side_of_the_title(patch, across=1), (20, 80))
+
+    def test_two_blocks_keep_the_one_nearest_the_axis(self):
+        patch = np.zeros((40, 100), np.uint8)
+        patch[10:30, 5:25] = 255                      # the title, out from the axis
+        patch[10:30, 70:95] = 255                     # the labels, against it
+        self.assertEqual(axes_module._label_side_of_the_title(patch, across=1), (70, 95))
+        self.assertEqual(axes_module._label_side_of_the_title(patch, across=0), (10, 30))
+
+
+class TickRowTests(unittest.TestCase):
+    """The scale is anchored on the tick marks, where a label has one."""
+
+    def test_a_label_takes_the_row_of_the_tick_beside_it(self):
+        image = blank(400, 300)
+        cv2.line(image, (200, 40), (200, 360), BLACK, 3)          # the y-axis
+        cv2.line(image, (185, 150), (199, 150), BLACK, 3)         # a tick, 12 rows above...
+        boxes_in = np.array([[140, 150, 40, 24]])                 # ...the label's middle of 162
+        levels = axes_module._levels_of(cv2.cvtColor(image, cv2.COLOR_BGR2GRAY),
+                                        (200, 40, 200, 360), boxes_in)
+        self.assertAlmostEqual(levels[0], 150, delta=2)
+
+    def test_a_label_with_no_tick_of_its_own_keeps_its_middle(self):
+        image = blank(400, 300)
+        cv2.line(image, (200, 40), (200, 360), BLACK, 3)
+        cv2.line(image, (185, 80), (199, 80), BLACK, 3)           # a tick far from the label
+        boxes_in = np.array([[140, 300, 40, 24]])                 # middle 312, the tick is 232 away
+        levels = axes_module._levels_of(cv2.cvtColor(image, cv2.COLOR_BGR2GRAY),
+                                        (200, 40, 200, 360), boxes_in)
+        self.assertEqual(levels[0], 312)
+
+    def test_an_axis_with_no_ticks_leaves_every_label_on_its_middle(self):
+        image = blank(400, 300)
+        cv2.line(image, (200, 40), (200, 360), BLACK, 3)
+        boxes_in = np.array([[140, 150, 40, 24], [140, 250, 40, 24]])
+        levels = axes_module._levels_of(cv2.cvtColor(image, cv2.COLOR_BGR2GRAY),
+                                        (200, 40, 200, 360), boxes_in)
+        self.assertEqual(list(levels), [162, 262])
 
 
 class ReadingLabelsTests(unittest.TestCase):
